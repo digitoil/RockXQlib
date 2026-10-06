@@ -1,0 +1,101 @@
+# RockXQlib 数据库配置文件
+# 支持多种数据库类型和Chat2DB集成
+
+databases:
+  sqlite:
+    name: "RockXQlib SQLite"
+    type: "sqlite"
+    file_path: "rockxqlib.db"
+    chat2db_enabled: true
+    description: "主要数据存储，包含行情数据、策略配置、回测结果等"
+    
+  vector_db:
+    name: "Vector Database"
+    type: "vector"
+    file_path: "vector_kb"
+    chat2db_enabled: false
+    description: "向量数据库，用于AI知识库和文本向量化"
+    
+  mongodb:
+    name: "MongoDB Tasks"
+    type: "mongodb"
+    host: "localhost"
+    port: 27017
+    database: "qlib_tasks"
+    chat2db_enabled: true
+    description: "Qlib工作流任务管理数据库"
+
+# Chat2DB配置
+chat2db:
+  auto_start: true
+  port: 10824
+  executable_path: ""  # 留空自动检测
+  
+  # AI功能配置
+  ai_features:
+    enabled: true
+    model: "gpt-3.5-turbo"
+    api_key: ""  # 需要用户配置
+    max_tokens: 2000
+    temperature: 0.7
+    
+  # 安全配置
+  security:
+    enable_auth: false
+    username: ""
+    password: ""
+    
+  # 数据目录
+  data_dir: "data/chat2db"
+  
+  # 日志配置
+  logging:
+    level: "INFO"
+    file: "logs/chat2db.log"
+    max_size: "10MB"
+    backup_count: 5
+
+# 量化分析专用SQL模板
+quant_sql_templates:
+  market_data:
+    - name: "获取股票行情数据"
+      template: "SELECT * FROM market_data WHERE symbol = '{symbol}' AND datetime BETWEEN '{start_date}' AND '{end_date}' ORDER BY datetime"
+      description: "查询指定股票的行情数据"
+      
+    - name: "获取最新价格"
+      template: "SELECT symbol, close, volume FROM market_data WHERE datetime = (SELECT MAX(datetime) FROM market_data WHERE symbol = '{symbol}')"
+      description: "获取股票最新价格"
+      
+  strategy:
+    - name: "查询策略配置"
+      template: "SELECT * FROM strategy_config WHERE strategy_name = '{strategy_name}'"
+      description: "查询策略配置信息"
+      
+    - name: "获取回测结果"
+      template: "SELECT * FROM backtest_result WHERE strategy_name = '{strategy_name}' ORDER BY created_time DESC LIMIT {limit}"
+      description: "获取策略回测结果"
+      
+  analysis:
+    - name: "计算收益率"
+      template: "SELECT symbol, (close - LAG(close) OVER (PARTITION BY symbol ORDER BY datetime)) / LAG(close) OVER (PARTITION BY symbol ORDER BY datetime) as return_rate FROM market_data WHERE symbol = '{symbol}'"
+      description: "计算股票收益率"
+      
+    - name: "计算移动平均"
+      template: "SELECT symbol, datetime, close, AVG(close) OVER (PARTITION BY symbol ORDER BY datetime ROWS BETWEEN {window-1} PRECEDING AND CURRENT ROW) as ma_{window} FROM market_data WHERE symbol = '{symbol}'"
+      description: "计算移动平均线"
+
+# 数据库连接池配置
+connection_pool:
+  max_connections: 10
+  min_connections: 2
+  connection_timeout: 30
+  idle_timeout: 300
+  
+# 数据同步配置
+sync:
+  enabled: true
+  interval: 60  # 秒
+  tables:
+    - "market_data"
+    - "strategy_config"
+    - "backtest_result"

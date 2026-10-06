@@ -1,0 +1,54 @@
+# RockX Portfolio Management System Configuration
+# 投资组合管理系统配置文件
+
+system_name: "RockX Portfolio"
+system_type: "portfolio"
+version: "1.0"
+description: "投资组合管理和优化系统"
+enabled: true
+
+database_config:
+  primary:
+    type: "postgresql"
+    host: "localhost"
+    port: 5432
+    database: "portfolio_db"
+    username: "portfolio_user"
+    password: ""
+    tables: ["portfolios", "holdings", "transactions", "performance", "benchmarks"]
+  
+  analytics:
+    type: "clickhouse"
+    host: "localhost"
+    port: 8123
+    database: "portfolio_analytics"
+    enabled: true
+    description: "投资组合分析数据"
+
+sql_templates:
+  - "投资组合收益率"
+  - "持仓分析"
+  - "相关性分析"
+  - "基准比较"
+  - "归因分析"
+  - "风险调整收益"
+
+ai_prompts:
+  portfolio_analysis:
+    - "请生成投资组合绩效分析的SQL查询"
+    - "请计算投资组合的风险指标"
+    - "请分析投资组合的归因结果"
+  
+  optimization:
+    - "请生成投资组合优化相关的SQL查询"
+    - "请分析资产配置的合理性"
+    - "请计算最优权重分配"
+
+custom_features:
+  portfolio_construction: true
+  performance_attribution: true
+  risk_budgeting: true
+  rebalancing: true
+  benchmark_analysis: true
+  client_reporting: true
+

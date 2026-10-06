@@ -1,0 +1,61 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Current File",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}",
+                "PYTHONIOENCODING": "utf-8"
+            },
+            "args": [],
+            "justMyCode": false
+        },
+        {
+            "name": "Python: RockXQlib Main",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/launch_gui_complete_integration.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}",
+                "PYTHONIOENCODING": "utf-8"
+            },
+            "args": [],
+            "justMyCode": false
+        },
+        {
+            "name": "Python: Test Chat2DB Integration",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/test_chat2db_integration.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}",
+                "PYTHONIOENCODING": "utf-8"
+            },
+            "args": [],
+            "justMyCode": false
+        },
+        {
+            "name": "Python: Simple Test",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/test_simple.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}",
+                "PYTHONIOENCODING": "utf-8"
+            },
+            "args": [],
+            "justMyCode": false
+        }
+    ]
+}

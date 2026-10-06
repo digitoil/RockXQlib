@@ -1,0 +1,131 @@
+# RockX Universal LLM Configuration
+# 通用LLM配置文件
+
+providers:
+  ollama:
+    enabled: true
+    base_url: "http://localhost:11434"
+    timeout: 60
+    max_retries: 3
+    
+  openai:
+    enabled: false
+    api_key: ""
+    base_url: "https://api.openai.com/v1"
+    timeout: 60
+    
+  claude:
+    enabled: false
+    api_key: ""
+    base_url: "https://api.anthropic.com"
+    timeout: 60
+
+# 默认配置
+default_provider: "ollama"
+default_model: "qwen3:latest"
+
+# 量化分析专用模型配置
+quant_models:
+  primary: "qwen3:latest"           # 主要量化分析模型
+  secondary: "deepseek-r1:8b"       # 备用模型
+  embedding: "nomic-embed-text:latest"  # 嵌入模型
+  code: "deepseek-r1:8b"            # 代码生成模型
+
+# 性能配置
+performance:
+  cache_enabled: true
+  cache_ttl: 300
+  max_concurrent_requests: 5
+
+# 系统专用模型配置
+system_models:
+  RockXQlib:
+    primary: "qwen3:latest"
+    secondary: "deepseek-r1:8b"
+    embedding: "nomic-embed-text:latest"
+  
+  RockX Trading:
+    primary: "qwen3:latest"
+    secondary: "deepseek-r1:8b"
+    embedding: "bge-m3:latest"
+  
+  RockX Risk:
+    primary: "deepseek-r1:8b"
+    secondary: "qwen3:latest"
+    embedding: "nomic-embed-text:latest"
+  
+  RockX Portfolio:
+    primary: "qwen3:latest"
+    secondary: "deepseek-r1:8b"
+    embedding: "bge-m3:latest"
+
+# AI提示词配置
+ai_prompts:
+  quant_analysis:
+    - "请为量化分析生成SQL查询语句"
+    - "请优化这个技术指标计算查询"
+    - "请生成风险分析相关的SQL语句"
+    - "请解释这个回测结果查询的含义"
+    - "请为投资组合分析生成SQL查询"
+  
+  trading_analysis:
+    - "请分析交易策略的执行效果"
+    - "请生成风险控制相关的SQL查询"
+    - "请计算交易成本和收益分析"
+    - "请分析订单执行质量"
+  
+  risk_management:
+    - "请生成风险监控的SQL查询"
+    - "请计算VaR和压力测试查询"
+    - "请分析持仓风险暴露"
+    - "请生成风险报告查询"
+  
+  portfolio_analysis:
+    - "请生成投资组合绩效分析的SQL查询"
+    - "请计算投资组合的风险指标"
+    - "请分析投资组合的归因结果"
+    - "请生成资产配置优化查询"
+
+# 模型能力配置
+model_capabilities:
+  qwen3:latest:
+    max_tokens: 8192
+    temperature: 0.7
+    capabilities: ["text_generation", "chat", "code_generation", "quantitative_analysis"]
+    languages: ["zh-CN", "en-US"]
+  
+  deepseek-r1:8b:
+    max_tokens: 4096
+    temperature: 0.3
+    capabilities: ["text_generation", "chat", "code_generation", "reasoning"]
+    languages: ["zh-CN", "en-US"]
+  
+  nomic-embed-text:latest:
+    max_tokens: 512
+    temperature: 0.0
+    capabilities: ["embedding", "similarity_search"]
+    languages: ["zh-CN", "en-US"]
+  
+  bge-m3:latest:
+    max_tokens: 512
+    temperature: 0.0
+    capabilities: ["embedding", "multilingual", "similarity_search"]
+    languages: ["zh-CN", "en-US", "ja-JP", "ko-KR"]
+
+# 安全配置
+security:
+  enable_api_key_encryption: false
+  max_request_size: "10MB"
+  rate_limiting:
+    enabled: true
+    requests_per_minute: 60
+    requests_per_hour: 1000
+
+# 日志配置
+logging:
+  level: "INFO"
+  file: "logs/llm.log"
+  max_size: "10MB"
+  backup_count: 5
+  console_output: true
+

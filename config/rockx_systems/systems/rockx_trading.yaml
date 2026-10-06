@@ -1,0 +1,53 @@
+# RockX Trading System Configuration
+# 交易系统配置文件
+
+system_name: "RockX Trading"
+system_type: "trading"
+version: "1.0"
+description: "专业交易执行和风险管理系统"
+enabled: true
+
+database_config:
+  primary:
+    type: "postgresql"
+    host: "localhost"
+    port: 5432
+    database: "trading_db"
+    username: "trading_user"
+    password: ""
+    tables: ["trades", "orders", "positions", "accounts", "risk_metrics"]
+  
+  redis:
+    type: "redis"
+    host: "localhost"
+    port: 6379
+    database: 0
+    enabled: true
+    description: "实时数据缓存"
+
+sql_templates:
+  - "交易记录查询"
+  - "持仓分析"
+  - "风险指标计算"
+  - "订单状态查询"
+  - "账户资金分析"
+  - "交易统计"
+
+ai_prompts:
+  trading_analysis:
+    - "请分析交易策略的执行效果"
+    - "请生成风险控制相关的SQL查询"
+    - "请计算交易成本和收益分析"
+  
+  risk_management:
+    - "请生成风险监控的SQL查询"
+    - "请计算VaR和压力测试查询"
+    - "请分析持仓风险暴露"
+
+custom_features:
+  real_time_trading: true
+  risk_management: true
+  order_management: true
+  portfolio_tracking: true
+  compliance_monitoring: true
+

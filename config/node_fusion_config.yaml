@@ -1,0 +1,360 @@
+# RockXQlib 节点融合配置文件
+# 统一管理所有节点系统的集成和配置
+
+# 系统配置
+system:
+  name: "RockXQlib统一节点管理系统"
+  version: "1.0.0"
+  description: "基于Qlib核心的量化分析节点系统"
+  
+# 节点系统配置
+node_systems:
+  # Qlib核心节点系统
+  qlib_core:
+    enabled: true
+    priority: 1
+    description: "基于Qlib核心API的节点系统"
+    modules:
+      - "nodes.qlib_core_nodes"
+    classes:
+      - "QlibInitNode"
+      - "QlibDataNode"
+      - "QlibDatasetNode"
+      - "QlibModelNode"
+      - "QlibStrategyNode"
+      - "QlibBacktestNode"
+    
+  # 现有节点系统（已优化，禁用重复节点）
+  existing_nodes:
+    enabled: false
+    priority: 2
+    description: "兼容现有节点系统（已优化，禁用重复节点）"
+    modules:
+      - "nodes.data_nodes"
+      - "nodes.model_nodes"
+      - "nodes.strategy_nodes"
+      - "nodes.backtest_nodes"
+    classes:
+      - "RockXQlibQlibInitNode"
+      - "RockXQlibGetDataNode"
+      - "RockXQlibDataHandlerNode"
+      - "RockXQlibDatasetNode"
+      - "QlibLinearNode"
+      - "QlibLGBMModelNode"
+      - "QlibTopkDropoutStrategyNode"
+      - "RockXQlibBacktestNode"
+    
+  # AI功能节点
+  ai_features:
+    enabled: true
+    priority: 3
+    description: "AI功能和LLM模型节点"
+    modules:
+      - "nodes.ai_nodes"
+    classes:
+      - "QlibLLMNode"
+      - "QlibKnowledgeBaseNode"
+      - "QlibSmartAnalysisNode"
+      - "QlibOllamaNode"
+    
+  # 可视化节点
+  visualization:
+    enabled: true
+    priority: 4
+    description: "可视化工具和图表引擎节点"
+    modules:
+      - "nodes.visualization_nodes"
+    classes:
+      - "QlibKlineViewerNode"
+      - "QlibBacktestVisualizerNode"
+      - "QlibChartEngineNode"
+      - "QlibDashboardNode"
+    
+  # Kronos金融K线大模型
+  kronos_model:
+    enabled: true
+    priority: 5
+    description: "Kronos金融K线大模型节点"
+    modules:
+      - "nodes.kronos_nodes"
+    classes:
+      - "KronosKlinePredictorNode"
+      - "KronosQuantitativeAnalysisNode"
+      - "KronosStrategyNode"
+    
+  # 核心集成节点
+  core_integration:
+    enabled: true
+    priority: 6
+    description: "核心集成功能节点"
+    modules:
+      - "nodes.core_integration_nodes"
+    classes:
+      - "DataFlowManagerNode"
+      - "MessageBusNode"
+      - "CacheManagerNode"
+      - "ExperimentManagerNode"
+      - "ParallelExecutorNode"
+    
+  # 特征工程节点
+  feature_engineering:
+    enabled: true
+    priority: 7
+    description: "特征工程和Alpha因子节点"
+    modules:
+      - "nodes.qlib_data_nodes"
+    classes:
+      - "QlibAlphaNode"
+      - "QlibFeatureNode"
+
+# 节点类别配置
+categories:
+  "Qlib核心":
+    description: "基于Qlib核心API的节点"
+    icon: "🔧"
+    color: "#0078d4"
+    priority: 1
+    
+  "数据节点":
+    description: "数据获取和处理节点"
+    icon: "📊"
+    color: "#28a745"
+    priority: 2
+    
+  "模型节点":
+    description: "机器学习模型节点"
+    icon: "🤖"
+    color: "#ffc107"
+    priority: 3
+    
+  "策略节点":
+    description: "交易策略节点"
+    icon: "📈"
+    color: "#17a2b8"
+    priority: 4
+    
+  "回测节点":
+    description: "回测和评估节点"
+    icon: "📉"
+    color: "#dc3545"
+    priority: 5
+    
+  "AI功能":
+    description: "AI功能和LLM模型节点"
+    icon: "🤖"
+    color: "#e83e8c"
+    priority: 6
+    
+  "可视化":
+    description: "可视化工具和图表引擎节点"
+    icon: "📊"
+    color: "#fd7e14"
+    priority: 7
+    
+  "Kronos模型":
+    description: "Kronos金融K线大模型节点"
+    icon: "🕰️"
+    color: "#17a2b8"
+    priority: 8
+    
+  "核心集成":
+    description: "核心集成功能节点"
+    icon: "🔧"
+    color: "#28a745"
+    priority: 9
+    
+  "特征工程":
+    description: "特征工程和Alpha因子节点"
+    icon: "⚙️"
+    color: "#6f42c1"
+    priority: 10
+
+# 工作流模板配置
+workflow_templates:
+  "LSTM_Alpha158":
+    name: "LSTM Alpha158工作流"
+    description: "基于LSTM模型和Alpha158特征的完整工作流"
+    category: "深度学习"
+    nodes:
+      - type: "qlib.core.init"
+        name: "Qlib初始化"
+        position: [100, 100]
+        properties:
+          provider_uri: "D:\\qlib_data"
+          region: "cn"
+          enable_exp_recorder: true
+      - type: "qlib.core.data"
+        name: "数据获取"
+        position: [300, 100]
+        properties:
+          instruments: "csi300"
+          start_time: "2008-01-01"
+          end_time: "2020-08-01"
+          fields: "$close,$volume,$amount"
+      - type: "qlib.core.dataset"
+        name: "数据集创建"
+        position: [500, 100]
+        properties:
+          handler_class: "Alpha158"
+          train_start: "2008-01-01"
+          train_end: "2014-12-31"
+          valid_start: "2015-01-01"
+          valid_end: "2016-12-31"
+          test_start: "2017-01-01"
+          test_end: "2020-08-01"
+      - type: "qlib.core.model"
+        name: "LSTM模型"
+        position: [700, 100]
+        properties:
+          model_class: "LSTM"
+          model_params: '{"hidden_size": 64, "num_layers": 2, "dropout": 0.1}'
+      - type: "qlib.core.strategy"
+        name: "TopK策略"
+        position: [900, 100]
+        properties:
+          strategy_class: "TopkDropoutStrategy"
+          strategy_params: '{"topk": 50, "n_drop": 5}'
+      - type: "qlib.core.backtest"
+        name: "回测执行"
+        position: [1100, 100]
+        properties:
+          start_time: "2017-01-01"
+          end_time: "2020-12-31"
+          initial_capital: "1000000"
+          benchmark: "SH000300"
+    connections:
+      - from: "qlib.core.init"
+        to: "qlib.core.data"
+        from_port: "initialized_qlib"
+        to_port: "initialized_qlib"
+      - from: "qlib.core.data"
+        to: "qlib.core.dataset"
+        from_port: "qlib_data"
+        to_port: "qlib_data"
+      - from: "qlib.core.dataset"
+        to: "qlib.core.model"
+        from_port: "dataset"
+        to_port: "dataset"
+      - from: "qlib.core.model"
+        to: "qlib.core.strategy"
+        from_port: "predictions"
+        to_port: "predictions"
+      - from: "qlib.core.strategy"
+        to: "qlib.core.backtest"
+        from_port: "signals"
+        to_port: "strategy"
+        
+  "LightGBM_Alpha360":
+    name: "LightGBM Alpha360工作流"
+    description: "基于LightGBM模型和Alpha360特征的完整工作流"
+    category: "机器学习"
+    nodes:
+      - type: "qlib.core.init"
+        name: "Qlib初始化"
+        position: [100, 100]
+      - type: "qlib.core.data"
+        name: "数据获取"
+        position: [300, 100]
+      - type: "qlib.core.dataset"
+        name: "数据集创建"
+        position: [500, 100]
+        properties:
+          handler_class: "Alpha360"
+      - type: "model.nodes"
+        name: "LightGBM模型"
+        position: [700, 100]
+        properties:
+          model_class: "LGBModel"
+      - type: "strategy.nodes"
+        name: "TopK策略"
+        position: [900, 100]
+      - type: "qlib.core.backtest"
+        name: "回测执行"
+        position: [1100, 100]
+    connections:
+      - from: "qlib.core.init"
+        to: "qlib.core.data"
+      - from: "qlib.core.data"
+        to: "qlib.core.dataset"
+      - from: "qlib.core.dataset"
+        to: "model.nodes"
+      - from: "model.nodes"
+        to: "strategy.nodes"
+      - from: "strategy.nodes"
+        to: "qlib.core.backtest"
+
+# 节点属性配置
+node_properties:
+  # Qlib核心节点属性
+  "qlib.core.init":
+    provider_uri:
+      type: "string"
+      default: "D:\\qlib_data"
+      description: "Qlib数据源URI"
+    region:
+      type: "string"
+      default: "cn"
+      description: "数据区域"
+    enable_exp_recorder:
+      type: "boolean"
+      default: true
+      description: "启用实验记录"
+      
+  "qlib.core.data":
+    instruments:
+      type: "string"
+      default: "csi300"
+      description: "股票池"
+    start_time:
+      type: "string"
+      default: "2008-01-01"
+      description: "开始时间"
+    end_time:
+      type: "string"
+      default: "2020-08-01"
+      description: "结束时间"
+    fields:
+      type: "string"
+      default: "$close,$volume,$amount"
+      description: "数据字段"
+      
+  "qlib.core.model":
+    model_class:
+      type: "string"
+      default: "LGBModel"
+      description: "模型类"
+    model_params:
+      type: "string"
+      default: "{}"
+      description: "模型参数(JSON格式)"
+
+# 系统集成配置
+integration:
+  # Qlib集成配置
+  qlib:
+    auto_init: true
+    provider_uri: "D:\\qlib_data"
+    region: "cn"
+    enable_exp_recorder: true
+    
+  # NodeGraphQt集成配置
+  nodegraphqt:
+    theme: "dark"
+    auto_layout: true
+    grid_enabled: true
+    snap_to_grid: true
+    
+  # 数据流配置
+  data_flow:
+    cache_enabled: true
+    cache_size: 1000
+    parallel_execution: true
+    max_workers: 4
+
+# 日志配置
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(levelname)s - %(message)s"
+  file: "rockxqlib.log"
+  max_size: "10MB"
+  backup_count: 5

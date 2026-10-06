@@ -1,0 +1,54 @@
+# RockX Risk Management System Configuration
+# 风险管理系统配置文件
+
+system_name: "RockX Risk"
+system_type: "risk"
+version: "1.0"
+description: "全面风险管理和监控系统"
+enabled: true
+
+database_config:
+  primary:
+    type: "postgresql"
+    host: "localhost"
+    port: 5432
+    database: "risk_db"
+    username: "risk_user"
+    password: ""
+    tables: ["risk_metrics", "var_calculations", "stress_tests", "limit_breaches", "risk_reports"]
+  
+  timeseries:
+    type: "timescaledb"
+    host: "localhost"
+    port: 5432
+    database: "risk_timeseries"
+    enabled: true
+    description: "时间序列风险数据"
+
+sql_templates:
+  - "风险指标计算"
+  - "VaR计算"
+  - "压力测试分析"
+  - "风险限额监控"
+  - "相关性分析"
+  - "风险报告生成"
+
+ai_prompts:
+  risk_analysis:
+    - "请生成风险指标计算的SQL查询"
+    - "请分析投资组合的风险暴露"
+    - "请计算风险调整后的收益指标"
+  
+  stress_testing:
+    - "请生成压力测试场景的SQL查询"
+    - "请分析极端市场条件下的风险"
+    - "请计算情景分析结果"
+
+custom_features:
+  var_calculation: true
+  stress_testing: true
+  limit_monitoring: true
+  risk_reporting: true
+  scenario_analysis: true
+  regulatory_reporting: true
+
