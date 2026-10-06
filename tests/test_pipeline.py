@@ -158,3 +158,19 @@ class LlmTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CompareTest(unittest.TestCase):
+    def test_diff_and_best(self):
+        from pipeline.runs import best_of, compare_text, diff_props
+        with tempfile.TemporaryDirectory() as t:
+            runs = []
+            for end, sharpe, dd in (("2014-12-31", 1.0, -0.30), ("2015-12-31", 1.4, -0.20)):
+                wf, _, _ = prepare(CHAIN, {"n3.train_end": end})
+                d = record_run(wf, {"status": "success", "elapsed": 1,
+                                    "metrics": {"sharpe": sharpe, "max_drawdown": dd}},
+                               runs_dir=Path(t), tag=end[:4])
+                runs.append(json.loads((d / "manifest.json").read_text()) | {"run_dir": str(d)})
+            self.assertEqual([x["key"] for x in diff_props(runs)], ["n3.train_end"])
+            self.assertEqual(best_of(runs), {"sharpe": 1, "max_drawdown": 1})
+            self.assertIn("n3.train_end", compare_text(runs))

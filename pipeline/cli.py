@@ -25,7 +25,7 @@ from core.workflow_schema import describe_schema, dump_workflow
 
 from .definition import parse_overrides
 from .runner import PROJECT_ROOT, prepare, run_pipeline
-from .runs import find_run, list_runs, table
+from .runs import compare_text, find_run, list_runs, table
 from .specs import extract_specs
 
 TEMPLATES_DIR = PROJECT_ROOT / "pipelines"
@@ -130,7 +130,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             if missing:
                 print("找不到运行记录:", ", ".join(missing))
                 return 1
-            print(table(recs))
+            print(compare_text(recs))
         else:
             runs = list_runs(args.runs_dir)
             print(table(runs) if runs else "（暂无运行记录）")

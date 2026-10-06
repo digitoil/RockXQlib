@@ -10,7 +10,7 @@ import json
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Signal, Qt
+from PySide6.QtCore import QThread, QTimer, Signal, Qt
 from PySide6.QtWidgets import (
     QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QMessageBox, QPlainTextEdit, QPushButton, QTableWidget,
@@ -225,8 +225,10 @@ class PipelineGuiMixin:
         lay.addWidget(tbl)
         row = QHBoxLayout()
         load_btn = QPushButton("载回画布")
+        cmp_btn = QPushButton("对比选中（Ctrl 多选）")
         close_btn = QPushButton("关闭")
         row.addStretch(1)
+        row.addWidget(cmp_btn)
         row.addWidget(load_btn)
         row.addWidget(close_btn)
         lay.addLayout(row)
@@ -246,4 +248,140 @@ class PipelineGuiMixin:
             self._load_pipeline_doc_to_canvas(json.loads(wf_path.read_text(encoding="utf-8")),
                                               title="历史运行")
         load_btn.clicked.connect(load)
+
+        def compare():
+            from pipeline.runs import compare_text
+            ids = sorted({tbl.item(ix.row(), 0).text() for ix in tbl.selectionModel().selectedRows()})
+            picked = [r for r in runs if r["run_id"] in ids]
+            if len(picked) < 2:
+                QMessageBox.information(dlg, "提示", "请按住 Ctrl 选择至少两条运行记录")
+                return
+            box = QDialog(dlg)
+            box.setWindowTitle("运行对比")
+            box.resize(860, 420)
+            v = QVBoxLayout(box)
+            t = QPlainTextEdit(compare_text(picked))
+            t.setReadOnly(True)
+            t.setStyleSheet("font-family: Consolas, 'Cascadia Mono', monospace;")
+            v.addWidget(t)
+            box.exec()
+        cmp_btn.clicked.connect(compare)
+        tbl.setSelectionMode(QTableWidget.ExtendedSelection)
         dlg.exec()
+
+    # ---------- 参数扫描（在画布上批量试参）----------
+    def pipeline_sweep(self):
+        """对当前画布做参数网格：逐组合改节点属性 -> 真实运行 -> 存档，结束后还原属性。
+
+        属性读写都在主线程；只有「执行」在 QThread 里，与一键运行一致。
+        """
+        from core.workflow_schema import serialize_graph
+        from pipeline.sweep import expand, parse_grid
+        nodes = self.graph.all_nodes()
+        if not nodes:
+            QMessageBox.information(self, "提示", "画布中没有节点")
+            return
+        if getattr(self, "workflow_thread", None) is not None and self.workflow_thread.isRunning():
+            QMessageBox.information(self, "提示", "已有工作流在运行")
+            return
+        wf = serialize_graph(self.graph, name="sweep")
+        ref = "\n".join("%s  %s" % (n["id"], n["name"]) for n in wf["nodes"])
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("参数扫描")
+        dlg.resize(520, 380)
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel("每行一个参数：节点id.属性=值1,值2,...（组合数 = 各行取值数相乘）"))
+        edit = QPlainTextEdit()
+        edit.setPlaceholderText("n3.train_end=2014-12-31,2015-12-31\nn4.model_class=LGBModel,XGBModel")
+        lay.addWidget(edit)
+        lay.addWidget(QLabel("画布节点 id 对照："))
+        ids = QPlainTextEdit(ref)
+        ids.setReadOnly(True)
+        ids.setMaximumHeight(110)
+        lay.addWidget(ids)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText("开始扫描")
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        lay.addWidget(bb)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        try:
+            lines = [x.strip() for x in edit.toPlainText().splitlines() if x.strip()]
+            combos = expand(parse_grid(lines))
+            by_id = {n["id"]: node for n, node in zip(wf["nodes"], nodes)}
+            props_of = {n["id"]: n["props"] for n in wf["nodes"]}
+            for c in combos:
+                for k in c:
+                    nid, _, prop = k.partition(".")
+                    if prop not in props_of.get(nid, {}):
+                        raise ValueError("画布上没有 %s（格式：节点id.属性）" % k)
+        except Exception as e:
+            QMessageBox.critical(self, "参数有误", str(e))
+            return
+        if len(combos) > 1 and QMessageBox.question(
+                self, "确认", "将依次运行 %d 个组合，真实回测可能耗时很久，继续吗？" % len(combos)
+        ) != QMessageBox.Yes:
+            return
+
+        self._sweep = {"wf": wf, "by_id": by_id, "combos": combos, "i": 0,
+                       "orig": {k: n.get_property(k.split('.', 1)[1])
+                                for c in combos for k in c
+                                for n in [by_id[k.split('.', 1)[0]]]},
+                       "results": []}
+        self.run_action.setEnabled(False)
+        self._sweep_next()
+
+    def _sweep_next(self):
+        sw = self._sweep
+        if sw["i"] >= len(sw["combos"]):
+            return self._sweep_done()
+        combo = sw["combos"][sw["i"]]
+        for k, v in combo.items():
+            nid, prop = k.split(".", 1)
+            sw["by_id"][nid].set_property(prop, v if isinstance(v, str) else json.dumps(v))
+        self.log_message("参数扫描 %d/%d: %s" % (sw["i"] + 1, len(sw["combos"]), combo), "INFO")
+        # 不能 import 主脚本（作为 __main__ 运行时会重复执行整个 GUI 启动代码），
+        # 从已加载的模块里取类
+        import sys
+        WorkflowExecutionThread = sys.modules[type(self).__module__].WorkflowExecutionThread
+        th = WorkflowExecutionThread(self.graph.all_nodes(), parent=self)
+        th.progress_updated.connect(self.update_workflow_progress)
+        th.execution_completed.connect(self._sweep_point_done)
+        th.execution_error.connect(lambda m: self._sweep_point_done({"status": "error", "error": m}))
+        self.workflow_thread = th
+        th.start()
+
+    def _sweep_point_done(self, summary):
+        from core.workflow_schema import serialize_graph
+        from pipeline.runner import record_run
+        sw = self._sweep
+        combo = sw["combos"][sw["i"]]
+        try:
+            wf = serialize_graph(self.graph, name="sweep")
+            record_run(wf, summary or {}, backend="gui-sweep", tag="s%02d" % (sw["i"] + 1))
+        except Exception as e:
+            self.log_message("保存扫描记录失败: %s" % e, "WARNING")
+        sw["results"].append((combo, (summary or {}).get("status")))
+        sw["i"] += 1
+        # 等线程真正结束再启动下一个，避免两个执行线程重叠
+        th = self.workflow_thread
+        if th.isFinished():
+            QTimer.singleShot(0, self._sweep_next)
+        else:
+            th.finished.connect(self._sweep_next)
+
+    def _sweep_done(self):
+        sw = self._sweep
+        for k, v in sw["orig"].items():           # 还原被改动的属性
+            nid, prop = k.split(".", 1)
+            sw["by_id"][nid].set_property(prop, v)
+        self.run_action.setEnabled(True)
+        ok = sum(1 for _, st in sw["results"] if st == "success")
+        self.log_message("参数扫描完成：%d/%d 成功，已存档，可在「运行记录…」里对比"
+                         % (ok, len(sw["results"])), "SUCCESS")
+        QMessageBox.information(self, "参数扫描完成",
+                                "%d/%d 个组合成功。\n打开「工作流 → 运行记录…」，Ctrl 多选后对比。"
+                                % (ok, len(sw["results"])))
+        self._sweep = None

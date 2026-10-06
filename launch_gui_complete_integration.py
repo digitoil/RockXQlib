@@ -906,6 +906,10 @@ class RockXQlibMainWindow(PipelineGuiMixin, QMainWindow):
         ai_action.triggered.connect(self.pipeline_ai_generate)
         workflow_menu.addAction(ai_action)
 
+        sweep_action = QAction('参数扫描…', self)
+        sweep_action.triggered.connect(self.pipeline_sweep)
+        workflow_menu.addAction(sweep_action)
+
         runs_action = QAction('运行记录…', self)
         runs_action.triggered.connect(self.pipeline_show_runs)
         workflow_menu.addAction(runs_action)
