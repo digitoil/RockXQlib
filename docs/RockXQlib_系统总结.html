@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RockXQlib 系统总结</title>
+<style>
+  :root{
+    --ink:#26251f; --ink2:#5f5e57; --ink3:#8a887f;
+    --line:#e0ded6; --line2:#d3d1c7;
+    --page:#f4f3ef; --card:#ffffff; --soft:#f7f7f5; --head:#f1efe8;
+    --blue:#185FA5; --blue-bg:#E6F1FB; --blue-ink:#0C447C;
+    --teal:#0F6E56; --teal-bg:#E1F5EE; --teal-ink:#085041;
+    --amber:#854F0B; --amber-bg:#FAEEDA;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; padding:40px 20px 80px;
+    background:var(--page); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    font-size:14px; line-height:1.75;
+  }
+  .doc{
+    max-width:920px; margin:0 auto; background:var(--card);
+    border:1px solid var(--line); border-radius:14px;
+    padding:56px 64px 64px;
+  }
+  header{border-bottom:2px solid var(--ink); padding-bottom:20px; margin-bottom:36px}
+  h1{font-size:28px; font-weight:600; margin:0 0 8px; letter-spacing:-.2px}
+  .sub{color:var(--ink2); font-size:13px; margin:0}
+  .sub b{font-weight:600; color:var(--ink)}
+  h2{
+    font-size:19px; font-weight:600; margin:44px 0 16px; padding-left:12px;
+    border-left:3px solid var(--blue); line-height:1.4;
+  }
+  h2:first-of-type{margin-top:0}
+  h3{font-size:15px; font-weight:600; margin:26px 0 10px; color:var(--ink)}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0; padding-left:22px}
+  li{margin:5px 0}
+  code{
+    font-family:"Cascadia Mono",Consolas,"Courier New",monospace;
+    font-size:12.5px; background:var(--soft); border:1px solid var(--line);
+    border-radius:4px; padding:1px 5px; color:var(--blue-ink);
+  }
+  table{
+    width:100%; border-collapse:collapse; margin:16px 0; font-size:13px;
+    table-layout:fixed;
+  }
+  th,td{
+    border:1px solid var(--line); padding:9px 12px; text-align:left;
+    vertical-align:top; word-wrap:break-word;
+  }
+  th{background:var(--head); font-weight:600; color:var(--ink)}
+  td code{background:transparent; border:0; padding:0}
+  .fig{margin:24px 0 8px; border:1px solid var(--line); border-radius:12px; padding:22px 18px; background:var(--card)}
+  .cap{font-size:12px; color:var(--ink3); text-align:center; margin:8px 0 26px}
+  .lead{
+    background:var(--blue-bg); border-left:3px solid var(--blue);
+    border-radius:0 8px 8px 0; padding:14px 18px; margin:18px 0;
+    color:var(--blue-ink); font-size:13.5px;
+  }
+  .note{
+    background:var(--amber-bg); border-left:3px solid var(--amber);
+    border-radius:0 8px 8px 0; padding:14px 18px; margin:18px 0;
+    color:#5c3708; font-size:13.5px;
+  }
+  .grid{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin:16px 0}
+  .card{background:var(--soft); border-radius:10px; padding:14px 16px}
+  .card .k{font-size:12px; color:var(--ink2); margin:0 0 4px}
+  .card .v{font-size:20px; font-weight:600; margin:0; letter-spacing:-.3px}
+  .card .n{font-size:12px; color:var(--ink3); margin:4px 0 0}
+  .ok{color:var(--teal-ink); font-weight:600}
+  .off{color:var(--ink3)}
+  footer{margin-top:52px; padding-top:20px; border-top:1px solid var(--line); font-size:12px; color:var(--ink3)}
+  @media print{
+    body{background:#fff; padding:0; font-size:12px}
+    .doc{border:0; border-radius:0; padding:0; max-width:none}
+    h2{page-break-after:avoid}
+    .fig,table{page-break-inside:avoid}
+  }
+</style>
+</head>
+<body>
+<div class="doc">
+
+<header>
+  <h1>RockXQlib 系统总结</h1>
+  <p class="sub">功能、目标与当前状态 &nbsp;·&nbsp; 生成日期 <b>2026-10-07</b> &nbsp;·&nbsp; 代码基线 <b>be4dbea 之后</b></p>
+</header>
+
+<h2>一、系统定位</h2>
+<div class="lead">
+RockXQlib 是一个把 qlib 量化研究流程「图形化」的桌面工具 —— 用拖节点代替写 Python，
+把「数据 → 特征 → 数据集 → 模型 → 策略 → 回测」整条流水线串起来跑通，并直接看到绩效结果。
+</div>
+
+<h2>二、系统目标</h2>
+<table>
+  <colgroup><col style="width:32%"><col style="width:68%"></colgroup>
+  <thead><tr><th>目标</th><th>具体含义</th></tr></thead>
+  <tbody>
+    <tr><td><b>把 qlib 从代码库变成可操作的工具</b></td><td>不用写 Python，通过节点画布 + 属性编辑器搭出一条完整的量化策略流水线</td></tr>
+    <tr><td><b>让链路真跑通、结果可信</b></td><td>宁可明确失败也不伪造数据（早期 3 处假信号已全部删除）；配置必须真的生效，不允许「配了不生效」</td></tr>
+    <tr><td><b>让结果可读</b></td><td>回测产出年化收益、最大回撤、夏普、超额收益、换手率，并渲染资金曲线与回撤曲线</td></tr>
+    <tr><td><b>核心自包含、扩展可插拔</b></td><td>核心只依赖 qlib + PySide6 + pandas/numpy，不背 AI、数据库等重依赖；扩展改一行配置即可启停</td></tr>
+  </tbody>
+</table>
+
+<h2>三、系统分层全貌</h2>
+<p>系统分为四层，核心特征是<b>依赖单向</b>：上层依赖下层，下层不反向引用。这是「核心干净、扩展可插拔」的基础。</p>
+
+<div class="fig">
+<svg viewBox="0 0 680 452" width="100%" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>RockXQlib 系统分层</title>
+<desc>四层结构：交互层、执行层、核心层、引擎层</desc>
+<defs>
+<marker id="ar1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+<path d="M2 1L8 5L2 9" fill="none" stroke="#888780" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</marker>
+</defs>
+
+<rect x="40" y="20" width="600" height="92" rx="12" fill="#F7F7F5" stroke="#D3D1C7" stroke-width="0.5"/>
+<text x="56" y="40" font-size="12" fill="#6B6A66">交互层</text>
+<rect x="56" y="52" width="181" height="40" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text x="146" y="72" text-anchor="middle" dominant-baseline="central" font-size="13" font-weight="500" fill="#0C447C">节点画布</text>
+<rect x="249" y="52" width="181" height="40" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text x="339" y="72" text-anchor="middle" dominant-baseline="central" font-size="13" font-weight="500" fill="#0C447C">属性编辑器</text>
+<rect x="442" y="52" width="181" height="40" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text x="532" y="72" text-anchor="middle" dominant-baseline="central" font-size="13" font-weight="500" fill="#0C447C">回测结果面板</text>
+
+<line x1="340" y1="114" x2="340" y2="128" stroke="#888780" stroke-width="0.5" marker-end="url(#ar1)"/>
+
+<rect x="40" y="132" width="600" height="92" rx="12" fill="#F7F7F5" stroke="#D3D1C7" stroke-width="0.5"/>
+<text x="56" y="152" font-size="12" fill="#6B6A66">执行层</text>
+<rect x="56" y="164" width="181" height="40" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text x="146" y="184" text-anchor="middle" dominant-baseline="central" font-size="13" font-weight="500" fill="#0C447C">一键运行执行器</text>
+<rect x="249" y="164" width="181" height="40" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text x="339" y="184" text-anchor="middle" dominant-baseline="central" font-size="13" font-weight="500" fill="#0C447C">序列化与校验</text>
+<rect x="442" y="164" width="181" height="40" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text x="532" y="184" text-anchor="middle" dominant-baseline="central" font-size="13" font-weight="500" fill="#0C447C">统一节点管理</text>
+
+<line x1="340" y1="226" x2="340" y2="240" stroke="#888780" stroke-width="0.5" marker-end="url(#ar1)"/>
+
+<rect x="40" y="244" width="600" height="92" rx="12" fill="#F7F7F5" stroke="#D3D1C7" stroke-width="0.5"/>
+<text x="56" y="264" font-size="12" fill="#6B6A66">核心层</text>
+<rect x="56" y="276" width="181" height="40" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text x="146" y="296" text-anchor="middle" dominant-baseline="central" font-size="13" font-weight="500" fill="#0C447C">Qlib 集成适配</text>
+<rect x="249" y="276" width="181" height="40" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text x="339" y="296" text-anchor="middle" dominant-baseline="central" font-size="13" font-weight="500" fill="#0C447C">数据路径探测</text>
+<rect x="442" y="276" width="181" height="40" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text x="532" y="296" text-anchor="middle" dominant-baseline="central" font-size="13" font-weight="500" fill="#0C447C">实验记录与降级</text>
+
+<line x1="340" y1="338" x2="340" y2="352" stroke="#888780" stroke-width="0.5" marker-end="url(#ar1)"/>
+
+<rect x="40" y="356" width="600" height="76" rx="12" fill="#F7F7F5" stroke="#D3D1C7" stroke-width="0.5"/>
+<text x="56" y="376" font-size="12" fill="#6B6A66">引擎层</text>
+<rect x="56" y="388" width="568" height="40" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.5"/>
+<text x="340" y="408" text-anchor="middle" dominant-baseline="central" font-size="13" font-weight="500" fill="#085041">Qlib 引擎 · 内置源码 + 回测越界补丁</text>
+</svg>
+</div>
+<p class="cap">图 1 &nbsp;RockXQlib 四层结构</p>
+
+<h2>四、核心流水线</h2>
+<p>系统真正在跑的干道是 7 个节点，通过<b>真实端口</b>逐级传递数据。端口名固定，连线即数据契约。</p>
+
+<div class="fig">
+<svg viewBox="0 0 680 414" width="100%" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>七节点量化流水线</title>
+<desc>从 Qlib 初始化到绩效指标的完整数据流</desc>
+<defs>
+<marker id="ar2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+<path d="M2 1L8 5L2 9" fill="none" stroke="#888780" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</marker>
+</defs>
+
+<rect x="40" y="20" width="600" height="38" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text x="64" y="39" dominant-baseline="central" font-size="13" font-weight="500" fill="#0C447C">1 · Qlib 初始化</text>
+<text x="616" y="39" text-anchor="end" dominant-baseline="central" font-size="11" fill="#185FA5">输出 initialized_qlib</text>
+
+<line x1="340" y1="60" x2="340" y2="74" stroke="#888780" stroke-width="0.5" marker-end="url(#ar2)"/>
+
+<rect x="40" y="76" width="600" height="38" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text x="64" y="95" dominant-baseline="central" font-size="13" font-weight="500" fill="#0C447C">2 · 数据获取</text>
+<text x="616" y="95" text-anchor="end" dominant-baseline="central" font-size="11" fill="#185FA5">输出 qlib_data</text>
+
+<line x1="340" y1="116" x2="340" y2="130" stroke="#888780" stroke-width="0.5" marker-end="url(#ar2)"/>
+
+<rect x="40" y="132" width="600" height="38" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text x="64" y="151" dominant-baseline="central" font-size="13" font-weight="500" fill="#0C447C">3 · 数据集构建</text>
+<text x="616" y="151" text-anchor="end" dominant-baseline="central" font-size="11" fill="#185FA5">输出 dataset</text>
+
+<line x1="340" y1="172" x2="340" y2="186" stroke="#888780" stroke-width="0.5" marker-end="url(#ar2)"/>
+
+<rect x="40" y="188" width="600" height="38" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text x="64" y="207" dominant-baseline="central" font-size="13" font-weight="500" fill="#0C447C">4 · 模型训练与预测</text>
+<text x="616" y="207" text-anchor="end" dominant-baseline="central" font-size="11" fill="#185FA5">输出 model / predictions</text>
+
+<line x1="340" y1="228" x2="340" y2="242" stroke="#888780" stroke-width="0.5" marker-end="url(#ar2)"/>
+
+<rect x="40" y="244" width="600" height="38" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text x="64" y="263" dominant-baseline="central" font-size="13" font-weight="500" fill="#0C447C">5 · 策略生成</text>
+<text x="616" y="263" text-anchor="end" dominant-baseline="central" font-size="11" fill="#185FA5">输出 strategy / signals</text>
+
+<line x1="340" y1="284" x2="340" y2="298" stroke="#888780" stroke-width="0.5" marker-end="url(#ar2)"/>
+
+<rect x="40" y="300" width="600" height="38" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text x="64" y="319" dominant-baseline="central" font-size="13" font-weight="500" fill="#0C447C">6 · 回测执行</text>
+<text x="616" y="319" text-anchor="end" dominant-baseline="central" font-size="11" fill="#185FA5">输出 backtest_results</text>
+
+<line x1="340" y1="340" x2="340" y2="354" stroke="#888780" stroke-width="0.5" marker-end="url(#ar2)"/>
+
+<rect x="40" y="356" width="600" height="38" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.5"/>
+<text x="64" y="375" dominant-baseline="central" font-size="13" font-weight="500" fill="#085041">7 · 绩效与图表</text>
+<text x="616" y="375" text-anchor="end" dominant-baseline="central" font-size="11" fill="#0F6E56">年化 · 回撤 · 夏普 · 超额 · 换手</text>
+</svg>
+</div>
+<p class="cap">图 2 &nbsp;七节点量化流水线（端口即数据契约）</p>
+
+<h3>节点属性一览（属性编辑器里可改的参数）</h3>
+<table>
+  <colgroup><col style="width:20%"><col style="width:22%"><col style="width:58%"></colgroup>
+  <thead><tr><th>节点</th><th>端口</th><th>可配置属性</th></tr></thead>
+  <tbody>
+    <tr><td>Qlib 初始化</td><td>出 <code>initialized_qlib</code></td><td>数据源 URI、区域、启用实验记录</td></tr>
+    <tr><td>数据获取</td><td>入 <code>initialized_qlib</code> / 出 <code>qlib_data</code></td><td>股票池、开始/结束时间、数据字段</td></tr>
+    <tr><td>数据处理器</td><td>入 <code>qlib_data</code> / 出 <code>handler</code></td><td>处理器类、模块路径、时间区间、股票池、处理器参数</td></tr>
+    <tr><td>数据集构建</td><td>入 <code>qlib_data</code> / 出 <code>dataset</code></td><td>处理器类、股票池、训练/验证/测试区间（各起止）</td></tr>
+    <tr><td>模型训练</td><td>入 <code>dataset</code> / 出 <code>model</code>、<code>predictions</code></td><td>模型类、模型参数（JSON）</td></tr>
+    <tr><td>策略生成</td><td>入 <code>predictions</code> / 出 <code>strategy</code>、<code>signals</code></td><td>策略类、模块路径、信号、策略参数、参数字典</td></tr>
+    <tr><td>回测执行</td><td>入 <code>strategy</code> / 出 <code>backtest_results</code></td><td>回测起止、初始资金、基准、策略配置</td></tr>
+  </tbody>
+</table>
+
+<h2>五、功能清单</h2>
+
+<h3>交互层 &nbsp;<span style="font-weight:400;color:#8a887f;font-size:13px">launch_gui_complete_integration.py，2,398 行</span></h3>
+<ul>
+  <li><b>节点画布</b> —— 拖拽创建、端口连线；执行时节点高亮（橙=运行中／绿=成功／红=失败），下次运行自动还原</li>
+  <li><b>属性编辑器</b> —— 修改参数的<b>唯一生效入口</b>（右侧「属性编辑器」页签）</li>
+  <li><b>回测结果面板</b> —— 6 张指标卡片 + 资金曲线／回撤曲线／日收益图；3 张图共享一份 plotly.js，HTML 体积 13.95 MB → 4.70 MB</li>
+  <li><b>菜单栏</b> —— 文件 / 编辑 / 视图 / 工作流 / 帮助</li>
+</ul>
+
+<h3>执行层</h3>
+<ul>
+  <li><b>一键运行</b>（<code>workflow_runner.py</code>）—— 按真实端口连线做 Kahn 拓扑排序；兼容新旧两套节点契约（<code>execute()</code> 与 <code>execute(inputs)</code>）；运行前预检（无连线／成环／缺 execute）</li>
+  <li><b>工作流序列化</b>（<code>workflow_schema.py</code>）—— 节点图 ↔ 简洁 JSON、结构校验、生成给 LLM 的节点说明书</li>
+  <li><b>统一节点管理</b>（<code>unified_node_manager.py</code>）—— 按配置加载节点系统，扩展开关可独立启停</li>
+</ul>
+
+<h3>核心层</h3>
+<ul>
+  <li><b>Qlib 集成适配</b>（<code>qlib_core_integration.py</code>）—— 信号归一化、绩效指标计算、回测配置归一化、mlflow 可用性探测</li>
+  <li><b>数据路径探测</b>（<code>qlib_paths.py</code>）—— 自动定位本机真实 qlib 数据目录并三重校验（<code>calendars/</code> + <code>features/</code> + <code>instruments/</code>）</li>
+  <li><b>实验记录与降级</b>（<code>qlib_exp_shim.py</code>）—— mlflow 缺失时用空实现兜底，链路照样跑通</li>
+</ul>
+
+<h3>引擎层</h3>
+<ul>
+  <li>内置 qlib 源码 + 回测越界补丁（<code>patches/apply_qlib_patches.py</code> 幂等固化，启动时自动检查）</li>
+</ul>
+
+<h3>质量保障</h3>
+<ul>
+  <li><b>核心纯净性守门测试</b>（<code>tests/test_core_purity.py</code>）—— AST 静态分析核心模块的模块级导入闭包，防止扩展依赖反向渗入</li>
+  <li><b>工作流校验</b> —— 节点类型／属性合法性／端口存在与方向／环检测／孤立节点（警告级）</li>
+</ul>
+
+<h2>六、当前启用状态</h2>
+<table>
+  <colgroup><col style="width:34%"><col style="width:16%"><col style="width:50%"></colgroup>
+  <thead><tr><th>节点 / 功能</th><th>状态</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td>7 个 Qlib 核心节点</td><td class="ok">已启用</td><td>Init / Data / Handler / Dataset / Model / Strategy / Backtest</td></tr>
+    <tr><td>Alpha 因子 · 特征工程</td><td class="ok">已启用</td><td>已补齐端口与 7 项可编辑属性</td></tr>
+    <tr><td>5 个深度模型 / 策略节点</td><td class="off">保留未启用</td><td>LSTM / Transformer / TopK / 多空 / 模拟器；契约与标识符已修好，改一行配置即可用</td></tr>
+    <tr><td>Kronos / AI / 可视化节点</td><td class="off">保留未启用</td><td>依赖库已就绪（torch、plotly、Ollama 接口等）</td></tr>
+    <tr><td>数据库 / Chat2DB 那套</td><td class="off">已移除</td><td>与 qlib 数据模型无交集；339 MB 客户端移至 <code>_external/</code>（保留未删）</td></tr>
+  </tbody>
+</table>
+<p>当前节点注册总数：<b>9 个</b>（7 核心 + Alpha 因子 + 特征工程）。</p>
+
+<h2>七、设计原则</h2>
+<ol>
+  <li><b>配置只有一个生效入口</b> —— 节点属性编辑器。曾经存在「管理界面配了、节点却不读」的配置孤岛，已全部删除</li>
+  <li><b>依赖单向</b> —— 核心不 import 任何扩展，由守门测试锁死边界，防止以后回退</li>
+  <li><b>第三方库路径放末尾</b> —— 避免同名包遮蔽（本项目先后踩过 <code>core</code> 与 <code>nodes</code> 两次）</li>
+  <li><b>补丁必须可重复执行</b> —— 幂等；源码不匹配时明确报错而非静默跳过</li>
+  <li><b>宁可失败也不造假</b> —— 拿不到真实预测就明确报错，绝不生成随机信号让回测跑出无意义结果</li>
+</ol>
+
+<h2>八、验证与工程状态</h2>
+<div class="grid">
+  <div class="card"><p class="k">端到端真实链路</p><p class="v">7 / 7</p><p class="n">节点全部执行成功</p></div>
+  <div class="card"><p class="k">序列化往返测试</p><p class="v">33 / 33</p><p class="n">含属性、位置、连线逐项比对</p></div>
+  <div class="card"><p class="k">异常输入拒绝</p><p class="v">12 种</p><p class="n">成环、端口/属性不存在等全部拦截</p></div>
+  <div class="card"><p class="k">核心模块闭包检查</p><p class="v">95 个</p><p class="n">无任何扩展依赖</p></div>
+</div>
+<p>示例回测（区间 2019-07-01 ~ 2020-09-25，306 个交易日）已能产出真实绩效指标与资金曲线。<b>说明</b>：示例收益跑输基准属于模型参数小、区间短导致，属策略本身问题 —— 重点是<b>管道已被验证正确</b>。</p>
+
+<h3>代码规模</h3>
+<table>
+  <colgroup><col style="width:34%"><col style="width:22%"><col style="width:44%"></colgroup>
+  <thead><tr><th>目录 / 文件</th><th>规模</th><th>职责</th></tr></thead>
+  <tbody>
+    <tr><td><code>core/</code></td><td>24 文件 · 12,442 行</td><td>集成、执行、序列化、路径探测、节点管理</td></tr>
+    <tr><td><code>nodes/</code></td><td>10 文件 · 6,016 行</td><td>全部节点定义（核心 + 扩展）</td></tr>
+    <tr><td><code>gui/</code></td><td>5 文件 · 1,535 行</td><td>回测结果面板等界面组件</td></tr>
+    <tr><td><code>visualization/</code></td><td>5 文件 · 1,339 行</td><td>图表与可视化工具</td></tr>
+    <tr><td><code>tests/</code> + <code>patches/</code></td><td>2 文件 · 502 行</td><td>守门测试 + qlib 补丁脚本</td></tr>
+    <tr><td><code>launch_gui_complete_integration.py</code></td><td>2,398 行</td><td>主程序入口</td></tr>
+  </tbody>
+</table>
+
+<h2>九、下一步方向</h2>
+<p><b>LLM 驱动建模</b> —— 让工作流从「手动画图」变成「描述需求即可生成」。这是目前唯一有实质缺口的方向。</p>
+<table>
+  <colgroup><col style="width:38%"><col style="width:62%"></colgroup>
+  <thead><tr><th>环节</th><th>现状</th></tr></thead>
+  <tbody>
+    <tr><td>LLM 接口</td><td class="ok">已具备（支持 OpenAI / Claude / Ollama / 自定义）</td></tr>
+    <tr><td>本地模型</td><td class="ok">已具备（约 42 GB：deepseek-r1 / qwen3.5 / qwen3-vl + 3 个 embedding）</td></tr>
+    <tr><td>知识库 + 向量检索</td><td class="ok">已具备</td></tr>
+    <tr><td>节点图序列化与校验</td><td class="ok">已完成（第 1 步）</td></tr>
+    <tr><td><b>LLM 输出 → 可执行节点图</b></td><td class="off">待实现（第 2 步）；节点说明书已生成</td></tr>
+    <tr><td>生成结果校验与预览确认</td><td class="off">待实现（第 3 步）</td></tr>
+  </tbody>
+</table>
+<div class="note">
+<b>前置条件</b>：需启动 Ollama 服务，或在 GPUStack 上部署一个模型（服务连通、密钥有效，但当前未部署模型）。<br>
+<b>三条原则</b>：不做孤岛（生成结果必须能真跑通）· 必须有校验（LLM 输出不可信）· 可回滚（生成结果只作预览，用户确认后才落到画布）。
+</div>
+
+<footer>
+RockXQlib 系统总结 &nbsp;·&nbsp; 项目路径 <code>E:\2025\RockX20251003\RockXQlib</code><br>
+配套参考：<code>README.md</code> · <code>INSTALLATION_GUIDE.md</code> · <code>QUICK_START.md</code> · <code>docs/</code>
+</footer>
+
+</div>
+</body>
+</html>
