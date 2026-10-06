@@ -573,6 +573,8 @@ class RockXQlibMainWindow(QMainWindow):
             # 使用原生NodesTreeWidget
             self.node_tree = NodesTreeWidget(node_graph=self.graph)
             self.node_tree.setStyleSheet(DarkThemeStyles.get_left_sidebar_style())
+            # 把树里的英文标识符类别换成中文（含对 Backdrop 的说明）
+            self._apply_tree_category_labels()
             layout.addWidget(self.node_tree)
         else:
             # 备用节点列表
@@ -581,6 +583,43 @@ class RockXQlibMainWindow(QMainWindow):
             layout.addWidget(self.node_list)
 
         return panel
+
+    # 节点树里类别名 -> 中文标签
+    # 树的类别是按标识符前缀自动分组的（'.'.join(nid.split('.')[:-1])），
+    # 所以显示的是 qlib.core / kronos / core 这类英文标识符。
+    # 这里映射成中文，顺带把 NodeGraphQt 自带的装饰节点说明清楚。
+    _TREE_CATEGORY_LABELS = {
+        "qlib.core": "Qlib 核心",
+        "qlib.ai": "AI 功能",
+        "qlib.viz": "可视化",
+        "qlib.feature": "特征工程",
+        "kronos": "Kronos 模型",
+        "core": "核心集成",
+        # NodeGraphQt 内置的装饰节点：Backdrop 是画布上的分组框/注释框，
+        # 有用但**不参与工作流执行**（没有 execute()）。
+        # 明确标注，免得被当成工作流节点。
+        "nodeGraphQt.nodes": "画布工具（不参与运行）",
+    }
+
+    def _apply_tree_category_labels(self):
+        """把节点树的英文类别名换成中文。
+
+        注意：``NodesTreeWidget.set_category_label()`` 只对**已存在**的类别
+        生效，而类别是在控件构造时按当前 factory 内容生成的，
+        所以必须在 ``NodesTreeWidget(...)`` 之后调用。
+        """
+        tree = getattr(self, "node_tree", None)
+        if tree is None or not hasattr(tree, "set_category_label"):
+            return
+        applied = []
+        for cat, label in self._TREE_CATEGORY_LABELS.items():
+            try:
+                tree.set_category_label(cat, label)
+                applied.append(cat)
+            except Exception as e:
+                print(f"[节点树] 类别 {cat} 标签设置失败（不影响功能）: {e}")
+        if applied:
+            print(f"[节点树] 已汉化类别: {applied}")
 
     def create_log_panel(self):
         """创建底部日志面板"""

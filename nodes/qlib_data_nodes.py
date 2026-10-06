@@ -35,6 +35,9 @@ logger = logging.getLogger(__name__)
 
 class QlibAlphaNode(QlibDataNode):
     """Alpha因子数据节点"""
+
+    __identifier__ = 'qlib.feature.alpha'
+    NODE_NAME = 'Alpha因子'
     
     def __init__(self):
         super().__init__()
@@ -137,6 +140,9 @@ class QlibAlphaNode(QlibDataNode):
 
 class QlibHighFreqNode(QlibDataNode):
     """高频数据节点"""
+
+    __identifier__ = 'qlib.feature.highfreq'
+    NODE_NAME = '高频数据'
     
     def __init__(self):
         super().__init__()
@@ -226,6 +232,9 @@ class QlibHighFreqNode(QlibDataNode):
 
 class QlibCustomDataNode(QlibDataNode):
     """自定义数据源节点"""
+
+    __identifier__ = 'qlib.feature.custom'
+    NODE_NAME = '自定义数据'
     
     def __init__(self):
         super().__init__()
@@ -338,6 +347,9 @@ class QlibCustomDataNode(QlibDataNode):
 
 class QlibProcessorNode(QlibDataNode):
     """数据预处理节点"""
+
+    __identifier__ = 'qlib.feature.processor'
+    NODE_NAME = '数据处理器'
     
     def __init__(self):
         super().__init__()
@@ -511,6 +523,9 @@ class QlibProcessorNode(QlibDataNode):
 
 class QlibFeatureNode(QlibDataNode):
     """特征工程节点"""
+
+    __identifier__ = 'qlib.feature.engineering'
+    NODE_NAME = '特征工程'
     
     def __init__(self):
         super().__init__()
@@ -674,6 +689,9 @@ class QlibFeatureNode(QlibDataNode):
 
 class QlibNormalizeNode(QlibDataNode):
     """数据标准化节点"""
+
+    __identifier__ = 'qlib.feature.normalize'
+    NODE_NAME = '数据标准化'
     
     def __init__(self):
         super().__init__()
@@ -753,6 +771,9 @@ class QlibNormalizeNode(QlibDataNode):
 
 class QlibFilterNode(QlibDataNode):
     """数据过滤节点"""
+
+    __identifier__ = 'qlib.feature.filter'
+    NODE_NAME = '数据过滤'
     
     def __init__(self):
         super().__init__()
@@ -863,6 +884,9 @@ class QlibFilterNode(QlibDataNode):
 
 class QlibCacheNode(QlibDataNode):
     """数据缓存节点"""
+
+    __identifier__ = 'qlib.feature.cache'
+    NODE_NAME = '数据缓存'
     
     def __init__(self):
         super().__init__()
@@ -961,6 +985,9 @@ class QlibCacheNode(QlibDataNode):
 
 class QlibStorageNode(QlibDataNode):
     """数据存储节点"""
+
+    __identifier__ = 'qlib.feature.storage'
+    NODE_NAME = '数据存储'
     
     def __init__(self):
         super().__init__()
