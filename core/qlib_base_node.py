@@ -15,11 +15,13 @@ from abc import ABC, abstractmethod
 import pandas as pd
 import numpy as np
 
-# 添加NodeGraphQt路径
+# 添加 NodeGraphQt 路径
+# ⚠️ 用 append 而非 insert(0, ...)：NodeGraphQt 目录下也有一个 nodes 子包，
+#    排到项目根之前会遮蔽本项目的 nodes 包（详见 core/base_node.py 的注释）。
 try:
     nodegraphqt_path = os.path.join(os.path.dirname(__file__), '..', '..', 'RockXFWV21', 'NodeGraphQt')
-    if os.path.exists(nodegraphqt_path):
-        sys.path.insert(0, nodegraphqt_path)
+    if os.path.exists(nodegraphqt_path) and nodegraphqt_path not in sys.path:
+        sys.path.append(nodegraphqt_path)
     
     from NodeGraphQt import BaseNode
     NODEGRAPH_AVAILABLE = True

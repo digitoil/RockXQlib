@@ -256,6 +256,23 @@ except ImportError as e:
     UNIFIED_MANAGER_AVAILABLE = False
     print(f"❌ 统一节点管理器导入失败: {e}")
 
+# 工作流序列化（图 <-> 简洁 JSON：可校验、人类可读、LLM 友好）
+try:
+    from core.workflow_schema import (
+        serialize_graph,
+        deserialize_graph,
+        validate_workflow,
+        collect_specs_from_graph,
+        describe_schema,
+        dump_workflow,
+        load_workflow,
+    )
+    WORKFLOW_SCHEMA_AVAILABLE = True
+    print("✅ 工作流序列化模块导入成功")
+except ImportError as e:
+    WORKFLOW_SCHEMA_AVAILABLE = False
+    print(f"⚠️ 工作流序列化模块不可用: {e}")
+
 # 工作流执行器（按真实端口连线拓扑排序 + 正确节点契约）
 try:
     from core.workflow_runner import (
@@ -724,6 +741,19 @@ class RockXQlibMainWindow(QMainWindow):
         import_yaml_action = QAction('导入YAML工作流', self)
         import_yaml_action.triggered.connect(self.import_yaml_workflow)
         file_menu.addAction(import_yaml_action)
+
+        file_menu.addSeparator()
+
+        # 简洁 JSON 格式（人类可读、可校验、LLM 友好）—— 与 save_session 并存
+        export_json_action = QAction('导出工作流(JSON)', self)
+        export_json_action.triggered.connect(self.export_workflow_json)
+        file_menu.addAction(export_json_action)
+
+        import_json_action = QAction('导入工作流(JSON)', self)
+        import_json_action.triggered.connect(self.import_workflow_json)
+        file_menu.addAction(import_json_action)
+
+        file_menu.addSeparator()
 
         export_action = QAction('导出图像', self)
         export_action.triggered.connect(self.export_image)
@@ -1294,6 +1324,96 @@ class RockXQlibMainWindow(QMainWindow):
                 QMessageBox.information(self, "成功", "工作流保存成功")
             except Exception as e:
                 QMessageBox.critical(self, "错误", f"保存工作流失败: {e}")
+
+    # ---------------------------------------------------------------
+    # 工作流 JSON 导出 / 导入（core/workflow_schema.py）
+    #
+    # 与上面的 save_session 方式的区别：
+    #   save_session -> NodeGraphQt 私有格式（含 UI 状态，人类不可读、无法校验）
+    #   本方法       -> 简洁 JSON（人类可读、可校验、LLM 友好）
+    # 两者并存，互不影响。
+    # ---------------------------------------------------------------
+    def export_workflow_json(self):
+        """导出工作流为简洁 JSON（人类可读、可校验、LLM 友好）。"""
+        if not (NODEGRAPH_AVAILABLE and self.graph):
+            QMessageBox.warning(self, "警告", "NodeGraphQt 不可用")
+            return
+        if not WORKFLOW_SCHEMA_AVAILABLE:
+            QMessageBox.warning(self, "功能不可用", "工作流序列化模块未加载")
+            return
+
+        if not self.graph.all_nodes():
+            QMessageBox.information(self, "提示", "画布中没有节点")
+            return
+
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "导出工作流(JSON)", "workflow.json",
+            "JSON 文件 (*.json);;所有文件 (*)")
+        if not filename:
+            return
+
+        try:
+            base = os.path.splitext(os.path.basename(filename))[0]
+            data = serialize_graph(self.graph, name=base)
+            dump_workflow(data, filename)
+            self.log_message(
+                "已导出工作流: %s（%d 节点 / %d 连线）"
+                % (os.path.basename(filename), len(data["nodes"]), len(data["links"])),
+                "SUCCESS")
+            self.status_label.setText("已导出: %s" % os.path.basename(filename))
+        except Exception as e:
+            QMessageBox.critical(self, "错误", "导出工作流失败: %s" % e)
+
+    def import_workflow_json(self):
+        """导入简洁 JSON 工作流。先校验，不通过则画布保持不变。"""
+        if not (NODEGRAPH_AVAILABLE and self.graph):
+            QMessageBox.warning(self, "警告", "NodeGraphQt 不可用")
+            return
+        if not WORKFLOW_SCHEMA_AVAILABLE:
+            QMessageBox.warning(self, "功能不可用", "工作流序列化模块未加载")
+            return
+
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "导入工作流(JSON)", "", "JSON 文件 (*.json);;所有文件 (*)")
+        if not filename:
+            return
+
+        try:
+            data = load_workflow(filename)
+        except Exception as e:
+            QMessageBox.critical(self, "错误", "读取文件失败: %s" % e)
+            return
+
+        # 用真实节点类收集规格（而不是硬编码表，避免节点变了规格没跟着变）
+        try:
+            specs = collect_specs_from_graph(self.graph)
+        except Exception:
+            specs = None
+
+        ok, msgs = validate_workflow(data, specs=specs)
+        if not ok:
+            detail = "\n".join("• " + m for m in msgs[:12])
+            QMessageBox.critical(
+                self, "校验未通过",
+                "工作流有问题，未导入（画布保持不变）:\n\n" + detail)
+            self.log_message("导入被拒绝，共 %d 个问题" % len(msgs), "ERROR")
+            return
+
+        rok, rerrs = deserialize_graph(data, self.graph, clear=True, specs=specs)
+        if not rok:
+            detail = "\n".join("• " + m for m in rerrs[:12])
+            QMessageBox.critical(self, "导入失败", detail)
+            self.log_message("导入失败", "ERROR")
+            return
+
+        self.log_message(
+            "已导入工作流: %s（%d 节点 / %d 连线）"
+            % (os.path.basename(filename),
+               len(data.get("nodes", [])), len(data.get("links", []))),
+            "SUCCESS")
+        for w in [m for m in msgs if m.startswith("[警告]")]:
+            self.log_message(w, "WARNING")
+        self.status_label.setText("已导入: %s" % os.path.basename(filename))
 
     def import_yaml_workflow(self):
         """导入YAML工作流"""

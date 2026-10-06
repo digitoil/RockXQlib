@@ -27,10 +27,18 @@ try:
 except ImportError:
     QLIB_AVAILABLE = False
 
-# 添加NodeGraphQt路径
+# 添加 NodeGraphQt 路径
+#
+# ⚠️ 必须用 append（加到 sys.path **末尾**），不能用 insert(0, ...)。
+#    因为 NodeGraphQt 目录下**也有一个 nodes 子包**
+#    （RockXFWV21/NodeGraphQt/nodes/）。一旦它排在项目根之前，
+#    `import nodes` 会解析到 NodeGraphQt 的那个，把本项目的 nodes 包
+#    整个遮蔽掉 —— 表现为 `from nodes.qlib_core_nodes import ...` 报
+#    "No module named 'nodes.qlib_core_nodes'"（而节点文件明明存在）。
+#    NodeGraphQt 是第三方库，项目自己的包应当优先。
 nodegraphqt_path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'RockXFWV21', 'NodeGraphQt')
 if nodegraphqt_path not in sys.path:
-    sys.path.insert(0, nodegraphqt_path)
+    sys.path.append(nodegraphqt_path)
 
 try:
     from NodeGraphQt import BaseNode
