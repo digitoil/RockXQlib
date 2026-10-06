@@ -362,11 +362,28 @@ class QlibBaseNode(BaseNode):
             pass
         return name
 
-    def set_property(self, key: str, value: Any):
-        """设置属性：同步写入节点字典与 NodeGraphQt 属性存储。"""
+    def set_property(self, key: str, value: Any, **kwargs):
+        """设置属性：同步写入节点字典与 NodeGraphQt 属性存储。
+
+        ⚠️ 必须接受 ``**kwargs`` 并透传给 super()。
+
+        NodeGraphQt 内部会以关键字参数调用本方法，例如
+        ``NodeGraphQt/base/graph.py`` 的 ``create_node()``：
+
+            n.set_property('selected', False, push_undo=True)
+
+        原实现把签名写死为 ``(key, value)``，于是**从节点树拖拽创建节点**
+        （`_on_node_data_dropped` -> `create_node`）时会抛：
+
+            TypeError: set_property() got an unexpected keyword argument 'push_undo'
+
+        表现为「拖拽没反应」，而报错发生在 NodeGraphQt 内部、指向框架代码，
+        极难定位。这里改为透传，默认 ``push_undo=False``（保持原行为）。
+        """
         self._properties[key] = value
+        kwargs.setdefault('push_undo', False)
         try:
-            super().set_property(key, value, push_undo=False)
+            super().set_property(key, value, **kwargs)
         except Exception:
             pass
 
