@@ -473,27 +473,54 @@ class RockXQlibMainWindow(QMainWindow):
         它不参与工作流执行（没有 ``execute()``），显示在节点树里会让人
         误以为是可用节点。
 
-        ``factory.nodes`` 返回的是**内部字典本身**（不是副本，见
-        NodeGraphQt/base/factory.py 的 ``nodes`` property），所以可以直接
-        删除键；factory 没有提供 unregister 接口。
+        ⚠️ 关键：``NodeFactory.register_node()`` 维护**三个**字典
+        （见 NodeGraphQt/base/factory.py）：
 
-        注意：只从**注册表**移除，不影响画布上已存在的实例
-        （已经放上去的 Backdrop 仍能正常显示与拖动）。
+            __nodes   {node_type: class}          <- 类型 -> 类
+            __names   {NODE_NAME: [node_type,...]}<- 名字 -> 类型列表
+            __aliases {alias: node_type}
+
+        而 **节点树读的是 ``names``**（``NodesTreeWidget._build_tree()``
+        里 `for name, node_ids in self._factory.names.items()`），
+        不是 ``nodes``。所以只删 ``nodes`` 的话注册表干净了、树里却还在
+        —— 这个坑很隐蔽。
+
+        三个 property（``nodes`` / ``names`` / ``aliases``）返回的都是
+        **内部字典本身**（不是副本），可以直接改。
+
+        注意：只从**注册表**移除，不影响画布上已存在的实例。
         """
         if not (NODEGRAPH_AVAILABLE and getattr(self, "graph", None)):
             return
-        # NodeGraph 内部的工厂叫 `_node_factory`；`factory` 是本程序
-        # 在 __init__ 里动态挂上去的别名。两个都试，避免依赖初始化顺序。
-        factory = (getattr(self.graph, "factory", None)
-                   or getattr(self.graph, "_node_factory", None))
+        # ⚠️ 工厂有两个名字，必须优先用 `_node_factory`：
+        #    - `_node_factory` 是 NodeGraph 真正在用的（register_node 走它，
+        #      `node_factory` property 也返回它）
+        #    - `factory` 是本程序 __init__ 里**动态挂的一个空 NodeFactory**
+        #      实例。空对象在 Python 里是 truthy，所以不能写
+        #      `getattr(g,'factory',None) or getattr(g,'_node_factory',None)`
+        #      —— 那样会拿到空的那个，一个节点也删不掉（且不报错）。
+        factory = getattr(self.graph, "_node_factory", None)
+        if factory is None or not getattr(factory, "nodes", None):
+            factory = getattr(self.graph, "factory", None)
+
         nodes = getattr(factory, "nodes", None)
         if not isinstance(nodes, dict):
             return
+        names = getattr(factory, "names", None)
 
         removed = []
         for key in [k for k in list(nodes) if k.startswith("nodeGraphQt.")]:
             nodes.pop(key, None)
             removed.append(key)
+            # 同步从 names（树的数据来源）里摘掉
+            if isinstance(names, dict):
+                for nm in list(names):
+                    ids = names.get(nm)
+                    if isinstance(ids, list) and key in ids:
+                        ids.remove(key)
+                        if not ids:
+                            names.pop(nm, None)
+
         if removed:
             print("[节点树] 已隐藏框架装饰节点: %s" % ", ".join(removed))
 
