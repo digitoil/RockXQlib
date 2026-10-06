@@ -71,27 +71,77 @@ class QlibCoreIntegration:
             logger.warning(f"❌ Qlib核心组件导入失败: {e}")
             return
 
-        # 模型是可选的：逐个探测，缺哪个记哪个，不影响核心可用性
-        self.available_models = {}
-        for cls_name, mod in (
-            ('LinearModel', 'qlib.contrib.model.linear'),
-            ('LGBModel', 'qlib.contrib.model.gbdt'),
-            ('XGBModel', 'qlib.contrib.model.xgboost'),
-            ('CatBoostModel', 'qlib.contrib.model.catboost_model'),
-        ):
-            try:
-                __import__(mod, fromlist=[cls_name])
-                self.available_models[cls_name] = True
-            except Exception:
-                self.available_models[cls_name] = False
-        # 神经网络模型（依赖 pytorch），单独标记
-        try:
-            from qlib.contrib.model.pytorch_lstm import LSTM  # noqa: F401
-            self.available_models['LSTM'] = True
-        except Exception:
-            self.available_models['LSTM'] = False
+        # 模型可用性探测
+        #
+        # ⚠️ 这里**必须完全避免 import**，原因是 qlib 上游的一个坑：
+        # ``qlib/contrib/model/__init__.py`` 里**无条件**导入了 9 个 PyTorch
+        # 模型（pytorch_lstm / pytorch_gru / pytorch_alstm / pytorch_gats …），
+        # 且**不在 try 保护内**。因此：
+        #
+        #     import qlib.contrib.model.<任何子模块>
+        #
+        # 都会先执行该 __init__.py，无条件加载 torch —— 即使用户全程只用
+        # LGBModel。实测 ``import qlib`` 本身**不会**拉起 torch，
+        # 正是模型探测这一步造成的（torch 约 1~2 秒、数百 MB 内存）。
+        #
+        # ⚠️ ``importlib.util.find_spec`` 同样**不能**用：定位子模块需要先
+        # 导入父包 ``qlib.contrib.model``，一样会触发那个 __init__.py。
+        #
+        # 因此改用「qlib 内文件存在 + 第三方依赖就绪」双重检查，零导入。
+        # 语义：True 表示「依赖已就绪」，而非「模型类已成功实例化」；
+        # 真正构建模型时若有问题，会抛出明确错误。
+        self.available_models = self._probe_qlib_models()
         avail = [k for k, v in self.available_models.items() if v]
         logger.info(f"可用模型: {avail if avail else '（仅基础模型）'}")
+
+    @staticmethod
+    def _probe_qlib_models() -> Dict[str, bool]:
+        """探测 qlib 可用模型 —— **不导入任何模块**。
+
+        见 ``_check_qlib_availability`` 的注释：qlib 的
+        ``contrib/model/__init__.py`` 会无条件导入 PyTorch 模型，
+        所以任何形式的 import（包括 ``find_spec``）都会拉起 torch。
+
+        改用「qlib 内文件存在 + 第三方依赖就绪」双重检查。
+        """
+        import os
+
+        result: Dict[str, bool] = {}
+        try:
+            import qlib
+            model_dir = os.path.join(
+                os.path.dirname(qlib.__file__), "contrib", "model")
+        except Exception:
+            return result
+
+        # 模型名 -> (qlib 内的文件名, 额外第三方依赖)
+        checks = (
+            ("LinearModel", "linear.py", None),
+            ("LGBModel", "gbdt.py", "lightgbm"),
+            ("XGBModel", "xgboost.py", "xgboost"),
+            ("CatBoostModel", "catboost_model.py", "catboost"),
+            ("LSTM", "pytorch_lstm.py", "torch"),
+            ("GRU", "pytorch_gru.py", "torch"),
+        )
+        for name, fname, dep in checks:
+            has_file = os.path.isfile(os.path.join(model_dir, fname))
+            has_dep = QlibCoreIntegration._module_available(dep) if dep else True
+            result[name] = bool(has_file and has_dep)
+        return result
+
+    @staticmethod
+    def _module_available(name: str) -> bool:
+        """探测模块能否定位（``find_spec``，**不导入**，不产生依赖负担）。
+
+        用于「只需要知道依赖在不在、不需要真的用它」的场景 ——
+        典型是启动阶段的可用性探测。真正 import 会拉起整条依赖链
+        （如 torch 数百 MB），代价远大于探测本身。
+        """
+        try:
+            import importlib.util
+            return importlib.util.find_spec(name) is not None
+        except (ImportError, ModuleNotFoundError, ValueError):
+            return False
 
     @staticmethod
     def _mlflow_client_available() -> bool:

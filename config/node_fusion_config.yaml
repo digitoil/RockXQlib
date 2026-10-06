@@ -30,7 +30,6 @@ node_systems:
     priority: 2
     description: "兼容现有节点系统（已优化，禁用重复节点）"
     modules:
-      - "nodes.data_nodes"
       - "nodes.model_nodes"
       - "nodes.strategy_nodes"
       - "nodes.backtest_nodes"
@@ -46,7 +45,7 @@ node_systems:
     
   # AI功能节点
   ai_features:
-    enabled: true
+    enabled: false
     priority: 3
     description: "AI功能和LLM模型节点"
     modules:
@@ -59,7 +58,7 @@ node_systems:
     
   # 可视化节点
   visualization:
-    enabled: true
+    enabled: false
     priority: 4
     description: "可视化工具和图表引擎节点"
     modules:
@@ -72,7 +71,7 @@ node_systems:
     
   # Kronos金融K线大模型
   kronos_model:
-    enabled: true
+    enabled: false
     priority: 5
     description: "Kronos金融K线大模型节点"
     modules:
@@ -84,7 +83,7 @@ node_systems:
     
   # 核心集成节点
   core_integration:
-    enabled: true
+    enabled: false
     priority: 6
     description: "核心集成功能节点"
     modules:

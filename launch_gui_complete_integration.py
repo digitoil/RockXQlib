@@ -128,53 +128,39 @@ from PySide6.QtGui import *
 from dark_theme_styles import DarkThemeStyles
 from node_styles_config import NodeStylesConfig
 
-# 导入数据库管理模块
-try:
-    from gui.database_management_widgets import DatabaseManagementWidget
-    from core.database_manager import RockXQlibDatabaseManager
-    DATABASE_MANAGEMENT_AVAILABLE = True
-    print("数据库管理模块可用")
-except ImportError as e:
-    DATABASE_MANAGEMENT_AVAILABLE = False
-    print(f"数据库管理模块不可用: {e}")
+# ----------------------------------------------------------------
+# 扩展组件：模块级只探测，不导入
+#
+# 这些组件会拉起较重的三方依赖（openai / langchain / chromadb / torch…）。
+# 原先在模块级直接 import，导致 GUI 一启动就被迫加载全部扩展。
+#
+# 现在分两步：
+#   1. 模块级只用 importlib.util.find_spec 探测「能不能用」——
+#      它只定位模块，**不执行模块代码**，因此不产生依赖负担
+#   2. 真正的 import 推迟到点开对应菜单时（见各 open_* 方法）
+#
+# 边界约定：核心（qlib 链路）不依赖扩展，由 tests/test_core_purity.py 守门
+# ----------------------------------------------------------------
+import importlib.util as _importlib_util
 
-# 导入通用配置和Chat2DB适配器
-try:
-    from core.rockx_universal_config import RockXUniversalConfigManager, RockXSystemType
-    from core.rockx_chat2db_adapter import RockXChat2DBAdapter
-    from core.universal_llm_integration import UniversalLLMManager
-    UNIVERSAL_CONFIG_AVAILABLE = True
-    print("OK 通用配置模块可用")
-except ImportError as e:
-    UNIVERSAL_CONFIG_AVAILABLE = False
-    print(f"WARNING 通用配置模块不可用: {e}")
 
-# 导入AI管理组件
-try:
-    from gui.ai_management_widgets import AIManagementDialog
-    AI_MANAGEMENT_AVAILABLE = True
-    print("OK AI管理组件可用")
-except ImportError as e:
-    AI_MANAGEMENT_AVAILABLE = False
-    print(f"⚠️ AI管理组件不可用: {e}")
+def _ext_available(module_name: str) -> bool:
+    """探测扩展模块能否定位（不导入，避免拉起其重依赖）。"""
+    try:
+        return _importlib_util.find_spec(module_name) is not None
+    except (ImportError, ModuleNotFoundError, ValueError):
+        return False
 
-# 导入可视化组件
-try:
-    from gui.visualization_widgets import VisualizationToolsDialog
-    VISUALIZATION_AVAILABLE = True
-    print("✅ 可视化组件可用")
-except ImportError as e:
-    VISUALIZATION_AVAILABLE = False
-    print(f"⚠️ 可视化组件不可用: {e}")
 
-# 导入Kronos管理组件
-try:
-    from gui.kronos_management_widgets import KronosManagerDialog
-    KRONOS_MANAGEMENT_AVAILABLE = True
-    print("✅ Kronos管理组件可用")
-except ImportError as e:
-    KRONOS_MANAGEMENT_AVAILABLE = False
-    print(f"⚠️ Kronos管理组件不可用: {e}")
+DATABASE_MANAGEMENT_AVAILABLE = _ext_available("gui.database_management_widgets")
+UNIVERSAL_CONFIG_AVAILABLE = _ext_available("core.rockx_universal_config")
+AI_MANAGEMENT_AVAILABLE = _ext_available("gui.ai_management_widgets")
+VISUALIZATION_AVAILABLE = _ext_available("gui.visualization_widgets")
+KRONOS_MANAGEMENT_AVAILABLE = _ext_available("gui.kronos_management_widgets")
+
+print("扩展组件探测: 数据库=%s 通用配置=%s AI=%s 可视化=%s Kronos=%s" % (
+    DATABASE_MANAGEMENT_AVAILABLE, UNIVERSAL_CONFIG_AVAILABLE,
+    AI_MANAGEMENT_AVAILABLE, VISUALIZATION_AVAILABLE, KRONOS_MANAGEMENT_AVAILABLE))
 
 # 导入内存监控和安全运行器
 try:
@@ -1980,42 +1966,46 @@ class RockXQlibMainWindow(QMainWindow):
             QMessageBox.critical(self, "错误", f"验证工作流失败: {e}")
 
     def open_kronos_manager(self):
-        """打开Kronos模型管理"""
-        if KRONOS_MANAGEMENT_AVAILABLE:
+        """打开 Kronos 模型管理（扩展面板按需加载）"""
+        try:
+            from gui.kronos_management_widgets import KronosManagerDialog as _ExtDialog
+            dialog = _ExtDialog(self)
+        except Exception as e:
+            # 降级到主程序内的轻量实现（同名类，见文件顶部的类定义）
+            self.log_message(f"Kronos 扩展面板不可用，已降级: {e}", "WARNING")
             dialog = KronosManagerDialog(self)
-            dialog.exec()
-        else:
-            # 使用原来的简单对话框作为备用
-            dialog = KronosManagerDialog(self)
-            dialog.exec()
+        dialog.exec()
 
     def open_ai_manager(self):
-        """打开AI功能管理"""
-        if AI_MANAGEMENT_AVAILABLE:
-            dialog = AIManagementDialog(self)
-            dialog.exec()
-        else:
-            # 使用原来的简单对话框作为备用
+        """打开 AI 功能管理（扩展面板按需加载）"""
+        try:
+            from gui.ai_management_widgets import AIManagementDialog as _ExtDialog
+            dialog = _ExtDialog(self)
+        except Exception as e:
+            self.log_message(f"AI 扩展面板不可用，已降级: {e}", "WARNING")
             dialog = AIManagerDialog(self)
-            dialog.exec()
+        dialog.exec()
 
     def open_visualization_tools(self):
-        """打开可视化工具"""
-        if VISUALIZATION_AVAILABLE:
+        """打开可视化工具（扩展面板按需加载）"""
+        try:
+            from gui.visualization_widgets import VisualizationToolsDialog as _ExtDialog
+            dialog = _ExtDialog(self)
+        except Exception as e:
+            self.log_message(f"可视化扩展面板不可用，已降级: {e}", "WARNING")
             dialog = VisualizationToolsDialog(self)
-            dialog.exec()
-        else:
-            # 使用原来的简单对话框作为备用
-            dialog = VisualizationToolsDialog(self)
-            dialog.exec()
+        dialog.exec()
 
     def open_database_management(self):
-        """打开数据库管理"""
+        """打开数据库管理（扩展面板按需加载）"""
         if not DATABASE_MANAGEMENT_AVAILABLE:
             QMessageBox.warning(self, "功能不可用", "数据库管理模块未安装或初始化失败")
             return
 
         try:
+            # 扩展组件：点开时才导入，避免启动时拉起数据库依赖
+            from gui.database_management_widgets import DatabaseManagementWidget
+
             # 创建数据库管理对话框
             dialog = QDialog(self)
             dialog.setWindowTitle("数据库管理")
@@ -2042,6 +2032,9 @@ class RockXQlibMainWindow(QMainWindow):
             return
 
         try:
+            # 扩展组件：点开时才导入
+            from core.database_manager import RockXQlibDatabaseManager
+
             # 创建数据库管理器
             db_manager = RockXQlibDatabaseManager()
 
@@ -2100,7 +2093,8 @@ class RockXQlibMainWindow(QMainWindow):
             title.setStyleSheet("font-size: 16px; font-weight: bold; margin: 10px;")
             layout.addWidget(title)
 
-            # 系统列表
+            # 系统列表（扩展组件：按需导入）
+            from core.rockx_universal_config import RockXUniversalConfigManager
             config_manager = RockXUniversalConfigManager()
             available_systems = config_manager.get_available_systems()
 
@@ -2167,7 +2161,8 @@ class RockXQlibMainWindow(QMainWindow):
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
-        # 系统列表
+        # 系统列表（扩展组件：按需导入）
+        from core.rockx_universal_config import RockXUniversalConfigManager
         config_manager = RockXUniversalConfigManager()
         available_systems = config_manager.get_available_systems()
 
@@ -2200,7 +2195,8 @@ class RockXQlibMainWindow(QMainWindow):
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
-        # 模板列表
+        # 模板列表（扩展组件：按需导入）
+        from core.rockx_universal_config import RockXUniversalConfigManager
         config_manager = RockXUniversalConfigManager()
         templates = list(config_manager.sql_templates.values())
 
@@ -2222,6 +2218,8 @@ class RockXQlibMainWindow(QMainWindow):
         # LLM状态信息
         if UNIVERSAL_CONFIG_AVAILABLE:
             try:
+                # 扩展组件：按需导入
+                from core.universal_llm_integration import UniversalLLMManager
                 llm_manager = UniversalLLMManager()
                 models = llm_manager.get_available_models()
 

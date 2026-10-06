@@ -122,7 +122,7 @@ os.environ['SETUPTOOLS_SCM_PRETEND_VERSION_FOR_ROCKXQLIB'] = '1.0.0'
 
 from core.qlib_base_node import QlibBaseNode
 from core.qlib_workflow import QlibWorkflow
-from core.qlib_execution_engine import QlibExecutionEngine
+from core.qlib_core_integration import QlibCoreIntegration
 print('✅ 所有核心模块导入成功')
 "
 ```
@@ -190,10 +190,10 @@ python run_gui.py
 
 #### 运行工作流
 ```bash
-# 运行指定工作流文件
-python -m core.qlib_execution_engine workflow.yaml
+# 启动 GUI（推荐方式）
+python launch_gui_complete_integration.py
 
-# 运行实验
+# 运行实验管理
 python -m core.qlib_experiment_manager experiment_config.yaml
 ```
 
@@ -386,43 +386,61 @@ class MyCustomNode(QlibBaseNode):
         return True
 ```
 
-### 2. 添加新插件
+### 2. 扩展新节点（推荐方式）
+
+新增节点不需要写插件 —— 定义节点类，再在配置里登记即可。
 
 ```python
-from core.qlib_plugin_manager import QlibPluginManager, QlibPlugin
+# 1) 定义节点（新契约：execute() 无参，数据走真实端口）
+from NodeGraphQt import BaseNode
 
-class MyPlugin(QlibPlugin):
+class MyCustomNode(BaseNode):
+    __identifier__ = 'qlib.custom'   # 必须唯一，否则注册时互相覆盖
+    NODE_NAME = '我的节点'
+
     def __init__(self):
-        super().__init__("MyPlugin", "1.0.0", "我的插件")
-        self.author = "Your Name"
-        
-        # 添加节点类
-        self.node_classes = [MyCustomNode]
-        
-        # 添加函数
-        self.functions = [self.my_function]
-    
-    def my_function(self):
-        return "Hello from plugin"
+        super().__init__()
+        self.add_input('input_data')
+        self.add_output('output_data')
 
-# 注册插件
-plugin_manager = QlibPluginManager("./plugins")
-plugin = MyPlugin()
-plugin.load()
+    def execute(self) -> bool:
+        data = self.get_input('input_data')
+        self.set_output('output_data', data)
+        return True
 ```
 
-### 3. 自定义可视化
+```yaml
+# 2) 在 config/node_fusion_config.yaml 的 node_systems 里登记，
+#    由 core/unified_node_manager.py 按需加载
+```
+
+> ⚠️ 两条契约：新式节点用 `execute(self)`（无参，数据走真实端口）；
+> 旧式节点用 `execute(self, inputs)`（传字典）。一键运行的执行器
+> （core/workflow_runner.py）会自动识别签名，两者可混在同一条链路里。
+>
+> 注：早期设计里的 `core/qlib_plugin_manager.py`（插件系统）与
+> `core/qlib_execution_engine.py`（执行引擎）**从未接线**，代码中
+> 无任何引用，已在核心精简中移除。
+
+### 3. 自定义回测图表
+
+回测结果面板已提供现成的绘图入口，直接复用即可。
 
 ```python
-from core.qlib_visualization_engine import QlibVisualizationEngine
+from gui.backtest_result_panel import (
+    adapt_qlib_backtest_result,   # qlib 回测结果 -> 绘图数据
+    build_dashboard_html,         # 多图合成单页（共享一份 plotly.js）
+    build_equity_figure,
+)
 
-class MyVisualizationEngine(QlibVisualizationEngine):
-    def create_custom_chart(self, data, chart_type):
-        """创建自定义图表"""
-        if chart_type == "my_custom":
-            # 实现自定义图表逻辑
-            pass
+data = adapt_qlib_backtest_result(backtest_result)
+fig = build_equity_figure(data)
+html = build_dashboard_html({'equity': fig}, {'equity': '资金曲线'})
 ```
+
+> 注：早期设计里的 `core/qlib_visualization_engine.py` **从未接线**，
+> 已在核心精简中移除。现有可视化能力见 `gui/backtest_result_panel.py`
+> 与 `visualization/` 目录。
 
 ## 部署指南
 
@@ -547,12 +565,13 @@ logging.basicConfig(
 
 #### 监控系统状态
 ```python
-from core.qlib_plugin_manager import QlibPluginManager
+from core.unified_node_manager import UnifiedNodeManager
+from core.config_manager import config_manager
 
-# 获取系统信息
-plugin_manager = QlibPluginManager()
-system_info = plugin_manager.get_system_info()
-print(f"系统状态: {system_info}")
+# 当前启用的节点系统与已注册节点
+print("启用的节点系统:", config_manager.get_enabled_node_systems())
+manager = UnifiedNodeManager()
+print("已注册节点数:", len(manager.registry.get_all_nodes()))
 ```
 
 ## 支持和帮助
