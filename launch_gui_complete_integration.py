@@ -687,8 +687,16 @@ class RockXQlibMainWindow(QMainWindow):
         layout.addLayout(button_layout)
 
         # 初始化日志
+        #
+        # ⚠️ 节点数必须**动态取**，不要写死 —— 这里原先硬编码 "22 个节点"，
+        # 在扩展开关收紧（25 -> 9）后就变成错误信息，误导排查。
         self.log_message("🚀 RockXQlib系统启动完成")
-        self.log_message("📋 节点系统初始化完成，共注册 22 个节点")
+        try:
+            _mgr = getattr(self, "unified_manager", None)
+            _n = len(_mgr.registry.get_all_nodes()) if _mgr else 0
+        except Exception:
+            _n = 0
+        self.log_message(f"📋 节点系统初始化完成，共注册 {_n} 个节点")
         self.log_message("✅ 界面初始化完成，等待用户操作...")
 
         return panel
@@ -1418,9 +1426,14 @@ class RockXQlibMainWindow(QMainWindow):
                 node_count = len(nodes)
 
                 # 计算连接数
+                #
+                # ⚠️ NodeGraphQt 的 node.inputs() / outputs() 在「该方向没有端口」
+                # 时返回 **None**，而不是空 dict。直接 .values() 会抛
+                # AttributeError，而本方法由 1 秒定时器驱动，会变成每秒刷一条
+                # 错误。必须用 `or {}` 兜住。
                 connection_count = 0
                 for node in nodes:
-                    for port in node.inputs().values():
+                    for port in (node.inputs() or {}).values():
                         connection_count += len(port.connected_ports())
 
                 self.node_count_label.setText(f"节点: {node_count}")
