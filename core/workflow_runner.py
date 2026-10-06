@@ -42,8 +42,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import inspect
+import io
 import logging
+import sys
 import time
 import traceback
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
@@ -88,6 +91,37 @@ def node_type_id(node: Any) -> str:
         if isinstance(val, str) and val:
             return val
     return node.__class__.__name__
+
+
+class _Tee(io.TextIOBase):
+    """边转发边记录节点的 print 输出。
+
+    真实节点失败时常只 ``print("❌ …原因")`` 然后 ``return False``，
+    执行结果里没有原因。记录下来，运行汇总里才有可供人和 LLM 诊断的信息。
+    """
+
+    def __init__(self, real: Any) -> None:
+        self.real = real
+        self.lines: List[str] = []
+
+    def write(self, text: str) -> int:
+        try:
+            self.real.write(text)
+        except Exception:
+            pass
+        self.lines.extend(t for t in text.splitlines() if t.strip())
+        return len(text)
+
+    def flush(self) -> None:
+        try:
+            self.real.flush()
+        except Exception:
+            pass
+
+    def failure_hint(self, limit: int = 3) -> str:
+        keys = ("❌", "失败", "错误", "Error", "不可用", "未初始化", "不存在")
+        hits = [l.strip() for l in self.lines if any(k in l for k in keys)]
+        return " | ".join(hits[-limit:])
 
 
 def _is_output_port(port: Any) -> bool:
@@ -489,10 +523,12 @@ class NodeGraphWorkflowRunner:
             ok = False
             detail = ""
 
+            tee = _Tee(sys.stdout)
             try:
                 # 注意：真实节点契约是 execute() 无参，数据走端口
                 # 自动适配新旧契约（旧契约返回 dict，{} 为失败 → bool({}) 为 False）
-                ok = bool(self._execute_node(node))
+                with contextlib.redirect_stdout(tee):
+                    ok = bool(self._execute_node(node))
                 elapsed = time.time() - t0
                 res = self._read_result(node)
                 status = (res or {}).get("status")
@@ -505,7 +541,12 @@ class NodeGraphWorkflowRunner:
                     self._emit(f"✅ {label} 完成，耗时 {elapsed:.2f}s", "SUCCESS")
                     ok_count += 1
                 else:
-                    detail = str((res or {}).get("error") or "返回 False")
+                    detail = str((res or {}).get("error") or "")
+                    if not detail:
+                        err_fn = getattr(node, "get_error_message", None)
+                        detail = (err_fn() if callable(err_fn) else None) or ""
+                    if not detail or detail == "返回 False":
+                        detail = tee.failure_hint() or "返回 False"
                     self._emit(f"❌ {label} 执行失败: {detail}", "ERROR")
 
                 if ok:
@@ -514,6 +555,9 @@ class NodeGraphWorkflowRunner:
             except Exception as e:
                 elapsed = time.time() - t0
                 detail = f"{type(e).__name__}: {e}"
+                hint = tee.failure_hint()
+                if hint:
+                    detail += " | " + hint
                 self._emit(f"❌ {label} 执行异常: {detail}", "ERROR")
                 self._emit(f"堆栈:\n{traceback.format_exc()}", "ERROR")
 

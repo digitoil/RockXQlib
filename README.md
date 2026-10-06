@@ -245,3 +245,6 @@ python test_unified_system_simple.py
 ## 📄 许可证
 
 本项目基于MIT许可证开源。
+
+## 流水线开发
+见 [docs/PIPELINE.md](docs/PIPELINE.md)：模板库、AI 生成、运行记录、命令行批量与 CI。
