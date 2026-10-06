@@ -32,13 +32,53 @@ import yaml
 #     core.database_manager 导入失败 -> gui.database_management_widgets
 #     里 DatabaseConnection 未定义 -> class 定义处抛 NameError
 #     （注意 NameError 不会被 except ImportError 捕获，整个 GUI 起不来）
-# 这里显式把项目根、qlib、NodeGraphQt 所在目录都补进去。
+#
+# ⚠️ 顺序很关键：兄弟目录 RockXFWV21 下**也有一个 core 包**
+#    （E:\...\RockXFWV21\core\，属于另一个项目：backtest/base/controllers/...）。
+#    如果 RockXFWV21 排在 RockXQlib 前面，`import core` 会解析到**错误的那个**，
+#    于是 core.workflow_runner / core.database_manager 等统统 "No module named"，
+#    而且报错信息完全指不到真正的原因。
+#    所以必须保证 RockXQlib 在最前 —— 用**倒序**插入，让 _HERE 最终位于 sys.path[0]。
 # ----------------------------------------------------------------
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _PARENT = os.path.dirname(_HERE)
-for _p in (_HERE, os.path.join(_HERE, "qlib"), os.path.join(_PARENT, "RockXFWV21")):
+for _p in (os.path.join(_PARENT, "RockXFWV21"), os.path.join(_HERE, "qlib"), _HERE):
     if os.path.isdir(_p) and _p not in sys.path:
         sys.path.insert(0, _p)
+
+# 自检：确认 core 解析到的是本项目，而不是 RockXFWV21 的同名包
+def _verify_core_package():
+    try:
+        import core as _core
+    except Exception as e:
+        print(f"⚠️ core 包导入失败: {e}")
+        return
+    core_file = getattr(_core, "__file__", "") or ""
+    if os.path.normcase(_HERE) not in os.path.normcase(core_file):
+        print("=" * 70)
+        print("⚠️ 警告：import core 解析到了非本项目的包！")
+        print(f"    期望目录: {_HERE}")
+        print(f"    实际文件: {core_file}")
+        print("    这会导致 core.* 模块大面积导入失败。")
+        print("    请检查 PYTHONPATH 顺序，确保 RockXQlib 在 RockXFWV21 之前。")
+        print("=" * 70)
+        # 尽力纠正：把本项目根提到最前，并清理已缓存的错误 core 包
+        if _HERE in sys.path:
+            sys.path.remove(_HERE)
+        sys.path.insert(0, _HERE)
+        for _m in [m for m in list(sys.modules) if m == "core" or m.startswith("core.")]:
+            del sys.modules[_m]
+        try:
+            import core as _core2
+            f2 = getattr(_core2, "__file__", "") or ""
+            print("    已尝试纠正 -> %s" % ("成功" if os.path.normcase(_HERE) in
+                                          os.path.normcase(f2) else "仍失败: " + f2))
+        except Exception as e:
+            print(f"    纠正失败: {e}")
+        print("=" * 70)
+
+
+_verify_core_package()
 
 from PySide6.QtWidgets import *
 from PySide6.QtCore import *
@@ -273,220 +313,78 @@ class VisualizationToolsDialog(QDialog):
 # 确保当前目录在sys.path中
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+# ============================================================================
 # 工作流执行线程
+#
+# 包装 core.workflow_runner.NodeGraphWorkflowRunner（按真实端口连线做拓扑排序、
+# 用正确的节点契约 execute() 执行）。
+#
+# 替换掉的原实现有三个致命问题：
+#   1. node_timeout=60s / max_execution_time=300s —— 实测单个 Alpha158 处理器
+#      节点就要 127 秒、整链约 380 秒，必然超时。
+#   2. _topological_sort 靠硬编码 node.id == 'qlib_init' 判断顺序 ——
+#      NodeGraphQt 的 id 是 '0x24ff7c4b770' 这种十六进制串，永远匹配不上。
+#   3. 把 node.execute() 又塞进一层 threading.Thread 来"实现超时" ——
+#      qlib 的 DataHandler 会用 multiprocessing spawn 子进程，再套线程会让
+#      子进程无法正常 spawn；且 Python 无法真正杀线程，"超时"后后台仍在吃内存。
+# ============================================================================
 class WorkflowExecutionThread(QThread):
-    """工作流执行线程"""
-    progress_updated = Signal(str, str)  # message, level
-    execution_completed = Signal(dict)   # results
-    execution_error = Signal(str)        # error_message
+    """工作流执行线程。"""
 
-    def __init__(self, nodes, parent=None):
+    progress_updated = Signal(str, str)          # message, level
+    node_started = Signal(str, int, int)         # label, index, total
+    node_finished = Signal(str, bool, float, str)  # label, ok, elapsed, detail
+    execution_completed = Signal(dict)           # 汇总结果
+    execution_error = Signal(str)                # 错误信息
+
+    def __init__(self, nodes, node_timeout=None, total_timeout=None, parent=None):
         super().__init__(parent)
-        self.nodes = nodes
-        self.results = {}
-        self._should_stop = False
+        self.nodes = list(nodes) if nodes else []
+
+        # 超时只作为"卡死兜底"；None 表示用 runner 里的默认值
+        kwargs = {}
+        if node_timeout is not None:
+            kwargs["node_timeout"] = node_timeout
+        if total_timeout is not None:
+            kwargs["total_timeout"] = total_timeout
+
+        self.runner = NodeGraphWorkflowRunner(
+            self.nodes,
+            on_progress=self._on_progress,
+            on_node_start=self._on_node_start,
+            on_node_end=self._on_node_end,
+            **kwargs,
+        )
+
+    # ---- 回调转信号（runner 在工作线程里跑，信号会排队到主线程）----
+
+    def _on_progress(self, message, level="INFO"):
+        self.progress_updated.emit(message, level)
+
+    def _on_node_start(self, label, index, total):
+        self.node_started.emit(label, index, total)
+
+    def _on_node_end(self, label, ok, elapsed, detail):
+        self.node_finished.emit(label, ok, elapsed, detail)
+
+    # ---- 线程主体 ----
 
     def run(self):
-        """执行工作流"""
-        import time
-        start_time = time.time()
-        max_execution_time = 300  # 5分钟超时
-
         try:
-            # 按拓扑顺序排序节点
-            sorted_nodes = self._topological_sort()
-            self.progress_updated.emit(f"开始执行工作流，共 {len(sorted_nodes)} 个节点", "INFO")
-
-            for i, node in enumerate(sorted_nodes):
-                # 检查是否应该停止
-                if self._should_stop or self.isInterruptionRequested():
-                    self.progress_updated.emit("工作流执行被中断", "WARNING")
-                    break
-
-                # 检查超时
-                if time.time() - start_time > max_execution_time:
-                    self.progress_updated.emit(f"工作流执行超时 ({max_execution_time}秒)，停止执行", "ERROR")
-                    break
-
-                node_name = getattr(node, 'name', lambda: 'Unknown')()
-                self.progress_updated.emit(f"执行节点 {i+1}/{len(sorted_nodes)}: {node_name}", "INFO")
-
-                # 执行节点
-                if hasattr(node, 'execute'):
-                    try:
-                        node_start_time = time.time()
-                        node_timeout = 60  # 每个节点最多60秒
-
-                        # 使用超时机制执行节点
-                        result = self._execute_node_with_timeout(node, node_timeout)
-                        node_execution_time = time.time() - node_start_time
-
-                        if result:
-                            self.results[node_name] = "执行成功"
-                            self.progress_updated.emit(f"OK {node_name} 执行成功 (耗时: {node_execution_time:.2f}秒)", "SUCCESS")
-
-                            # 检查是否需要处理信号占位符
-                            if hasattr(node, 'id') and node.id == 'model' and hasattr(node, 'predictions'):
-                                self._handle_signal_placeholder(node.predictions)
-                        else:
-                            self.results[node_name] = "执行失败"
-                            self.progress_updated.emit(f"ERROR {node_name} 执行失败", "ERROR")
-                    except Exception as e:
-                        self.results[node_name] = f"执行异常: {e}"
-                        self.progress_updated.emit(f"ERROR {node_name} 执行异常: {e}", "ERROR")
-                else:
-                    self.results[node_name] = "无执行方法"
-                    self.progress_updated.emit(f"WARNING {node_name} 无执行方法", "WARNING")
-
-                # 检查是否应该停止
-                if self._should_stop or self.isInterruptionRequested():
-                    self.progress_updated.emit("工作流执行被中断", "WARNING")
-                    break
-
-                # 短暂延迟，避免CPU占用过高
-                self.msleep(100)
-
-            total_time = time.time() - start_time
-            self.progress_updated.emit(f"工作流执行完成，总耗时: {total_time:.2f}秒", "INFO")
-            self.execution_completed.emit(self.results)
-
+            summary = self.runner.run()
+            self.execution_completed.emit(summary)
         except Exception as e:
-            self.progress_updated.emit(f"工作流执行异常: {e}", "ERROR")
+            import traceback
+            self.progress_updated.emit(
+                f"工作流执行异常: {e}\n{traceback.format_exc()}", "ERROR")
             self.execution_error.emit(str(e))
 
-    def _execute_node_with_timeout(self, node, timeout_seconds):
-        """带超时的节点执行"""
-        import threading
-        import queue
-        import psutil
-
-        result_queue = queue.Queue()
-        exception_queue = queue.Queue()
-        process = psutil.Process()
-
-        def execute_node():
-            try:
-                # 监控资源使用
-                start_cpu = process.cpu_percent()
-                start_memory = process.memory_info().rss / 1024 / 1024  # MB
-
-                result = node.execute()
-
-                # 检查资源使用情况
-                end_cpu = process.cpu_percent()
-                end_memory = process.memory_info().rss / 1024 / 1024  # MB
-
-                if end_cpu > 90:  # CPU使用率过高
-                    self.progress_updated.emit(f"警告: 节点执行后CPU使用率过高 {end_cpu:.1f}%", "WARNING")
-
-                if end_memory - start_memory > 500:  # 内存增长超过500MB
-                    self.progress_updated.emit(f"警告: 节点执行后内存增长过多 {end_memory - start_memory:.1f}MB", "WARNING")
-
-                result_queue.put(result)
-            except Exception as e:
-                exception_queue.put(e)
-
-        # 启动执行线程
-        thread = threading.Thread(target=execute_node)
-        thread.daemon = True
-        thread.start()
-
-        # 等待结果或超时
-        thread.join(timeout_seconds)
-
-        if thread.is_alive():
-            # 超时了
-            self.progress_updated.emit(f"节点执行超时 ({timeout_seconds}秒)，强制终止", "ERROR")
-            # 尝试强制终止线程（Python中无法直接终止线程，但可以设置标志）
-            return False
-
-        # 检查是否有异常
-        if not exception_queue.empty():
-            raise exception_queue.get()
-
-        # 检查是否有结果
-        if not result_queue.empty():
-            return result_queue.get()
-
-        return False
+    # ---- 对外控制 ----
 
     def stop_execution(self):
-        """停止工作流执行"""
-        self._should_stop = True
-        self.progress_updated.emit("正在停止工作流执行...", "WARNING")
+        """请求停止（协作式：当前节点跑完后生效）。"""
+        self.runner.request_stop()
 
-    def _handle_signal_placeholder(self, predictions):
-        """处理信号占位符替换"""
-        try:
-            # 查找策略节点
-            strategy_node = None
-            for node in self.nodes:
-                if hasattr(node, 'id') and node.id == 'strategy':
-                    strategy_node = node
-                    break
-
-            if not strategy_node:
-                return
-
-            # 检查策略节点是否有信号占位符
-            has_placeholder = strategy_node.get_property('_has_signal_placeholder')
-            if not has_placeholder:
-                return
-
-            # 替换信号占位符
-            signal_placeholder = strategy_node.get_property('_signal_placeholder')
-            if signal_placeholder == '<PRED>':
-                # 将预测结果设置为信号
-                strategy_node.set_property('signal', predictions)
-                self.progress_updated.emit(f"✅ 将<PRED>占位符替换为预测结果", "INFO")
-
-        except Exception as e:
-            self.progress_updated.emit(f"❌ 处理信号占位符失败: {e}", "ERROR")
-
-    def _topological_sort(self):
-        """拓扑排序节点"""
-        try:
-            # 基于节点ID进行拓扑排序
-            # 定义执行顺序：init -> dataset -> model -> strategy -> backtest
-            execution_order = ['qlib_init', 'dataset', 'model', 'strategy', 'backtest']
-
-            sorted_nodes = []
-            node_dict = {}
-
-            # 创建节点字典
-            for node in self.nodes:
-                if hasattr(node, 'id'):
-                    node_dict[node.id] = node
-                elif hasattr(node, 'name'):
-                    node_name = getattr(node, 'name', lambda: 'Unknown')()
-                    # 根据名称映射到ID
-                    if '初始化' in node_name or 'init' in node_name.lower():
-                        node_dict['qlib_init'] = node
-                    elif '数据' in node_name or 'dataset' in node_name.lower():
-                        node_dict['dataset'] = node
-                    elif '模型' in node_name or 'model' in node_name.lower():
-                        node_dict['model'] = node
-                    elif '策略' in node_name or 'strategy' in node_name.lower():
-                        node_dict['strategy'] = node
-                    elif '回测' in node_name or 'backtest' in node_name.lower():
-                        node_dict['backtest'] = node
-
-            # 按执行顺序添加节点
-            for node_id in execution_order:
-                if node_id in node_dict:
-                    sorted_nodes.append(node_dict[node_id])
-
-            # 添加未识别的节点
-            for node in self.nodes:
-                if node not in sorted_nodes:
-                    sorted_nodes.append(node)
-
-            return sorted_nodes
-
-        except Exception as e:
-            # 如果排序失败，返回原始顺序
-            print(f"拓扑排序失败: {e}，使用原始顺序")
-            return self.nodes
 
 # 导入统一节点管理器
 try:
@@ -497,6 +395,30 @@ try:
 except ImportError as e:
     UNIFIED_MANAGER_AVAILABLE = False
     print(f"❌ 统一节点管理器导入失败: {e}")
+
+# 工作流执行器（按真实端口连线拓扑排序 + 正确节点契约）
+try:
+    from core.workflow_runner import (
+        NodeGraphWorkflowRunner,
+        DEFAULT_NODE_TIMEOUT,
+        DEFAULT_TOTAL_TIMEOUT,
+    )
+    WORKFLOW_RUNNER_AVAILABLE = True
+    print("✅ 工作流执行器导入成功")
+except ImportError as e:
+    WORKFLOW_RUNNER_AVAILABLE = False
+    NodeGraphWorkflowRunner = None  # type: ignore
+    print(f"❌ 工作流执行器导入失败: {e}")
+
+# 回测结果面板（指标卡片 + 资金曲线/回撤图）
+try:
+    from gui.backtest_result_panel import BacktestResultPanel
+    BACKTEST_PANEL_AVAILABLE = True
+    print("✅ 回测结果面板导入成功")
+except ImportError as e:
+    BACKTEST_PANEL_AVAILABLE = False
+    BacktestResultPanel = None  # type: ignore
+    print(f"❌ 回测结果面板导入失败: {e}")
 
 class RockXQlibMainWindow(QMainWindow):
     """RockXQlib主窗口"""
@@ -622,7 +544,8 @@ class RockXQlibMainWindow(QMainWindow):
         splitter.addWidget(right_panel)
 
         # 设置分割器比例
-        splitter.setSizes([250, 800, 300])
+        # 右侧要容纳回测图表，适当加宽
+        splitter.setSizes([220, 740, 420])
 
         # 将上部面板添加到主布局
         main_layout.addWidget(upper_panel, 4)
@@ -752,32 +675,62 @@ class RockXQlibMainWindow(QMainWindow):
         return panel
 
     def create_right_panel(self):
-        """创建右侧面板"""
+        """创建右侧面板：属性编辑器 / 回测结果 两个页签。"""
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(5, 5, 5, 5)
 
-        # 标题
-        title = QLabel("属性编辑器")
-        title.setProperty("class", "sidebar_title")
-        title.setStyleSheet(DarkThemeStyles.get_right_sidebar_style())
-        layout.addWidget(title)
+        # ---- 属性编辑器 ----
+        prop_widget = QWidget()
+        prop_layout = QVBoxLayout(prop_widget)
+        prop_layout.setContentsMargins(4, 4, 4, 4)
 
-        # 属性编辑器 - 使用NodeGraphQt原生方法
         if NODEGRAPH_AVAILABLE and self.graph:
             self.property_editor = PropertiesBinWidget(node_graph=self.graph)
             self.property_editor.setProperty("class", "property_editor")
             self.property_editor.setStyleSheet(DarkThemeStyles.get_right_sidebar_style())
-            layout.addWidget(self.property_editor)
+            prop_layout.addWidget(self.property_editor)
         else:
-            # 备用属性编辑器
             self.property_editor = QTextEdit()
-            self.property_editor.setPlaceholderText("属性编辑器\nNodeGraphQt不可用时显示")
+            self.property_editor.setPlaceholderText("属性编辑器\nNodeGraphQt 不可用时显示")
             self.property_editor.setProperty("class", "property_editor")
             self.property_editor.setStyleSheet(DarkThemeStyles.get_right_sidebar_style())
-            layout.addWidget(self.property_editor)
+            prop_layout.addWidget(self.property_editor)
 
+        # ---- 回测结果 ----
+        if BACKTEST_PANEL_AVAILABLE:
+            self.result_panel = BacktestResultPanel()
+        else:
+            self.result_panel = None
+
+        # ---- 页签容器 ----
+        self.right_tabs = QTabWidget()
+        self.right_tabs.setStyleSheet(
+            "QTabWidget::pane { border: 1px solid #3a3a3a; background: #1e1e1e; }"
+            "QTabBar::tab { background: #2a2a2a; color: #b0b0b0; padding: 5px 12px;"
+            " border: 1px solid #3a3a3a; }"
+            "QTabBar::tab:selected { background: #1e1e1e; color: #ffffff; }")
+        self.right_tabs.addTab(prop_widget, "属性编辑器")
+        if self.result_panel is not None:
+            self.right_tabs.addTab(self.result_panel, "回测结果")
+        else:
+            hint = QLabel("回测结果面板不可用\n（gui.backtest_result_panel 导入失败）")
+            hint.setAlignment(Qt.AlignCenter)
+            hint.setStyleSheet("color: #b0b0b0;")
+            self.right_tabs.addTab(hint, "回测结果")
+
+        layout.addWidget(self.right_tabs)
         return panel
+
+    def show_result_tab(self):
+        """切换到「回测结果」页签。"""
+        tabs = getattr(self, "right_tabs", None)
+        if tabs is None:
+            return
+        for i in range(tabs.count()):
+            if tabs.tabText(i) == "回测结果":
+                tabs.setCurrentIndex(i)
+                break
 
     def log_message(self, message, level="INFO"):
         """添加日志消息"""
@@ -912,20 +865,32 @@ class RockXQlibMainWindow(QMainWindow):
         # 工作流菜单
         workflow_menu = menubar.addMenu('工作流')
 
-        run_action = QAction('运行工作流', self)
-        run_action.setShortcut('F5')
-        run_action.triggered.connect(self.run_workflow)
-        workflow_menu.addAction(run_action)
+        # 保存为实例属性：运行期间要禁用"运行"、启用"停止"
+        self.run_action = QAction('一键运行工作流', self)
+        self.run_action.setShortcut('F5')
+        self.run_action.triggered.connect(self.run_workflow)
+        workflow_menu.addAction(self.run_action)
 
-        stop_action = QAction('停止工作流', self)
-        stop_action.setShortcut('F6')
-        workflow_menu.addAction(stop_action)
+        self.stop_action = QAction('停止工作流', self)
+        self.stop_action.setShortcut('F6')
+        self.stop_action.setEnabled(False)
+        self.stop_action.triggered.connect(self.stop_workflow)
+        workflow_menu.addAction(self.stop_action)
 
         workflow_menu.addSeparator()
 
         validate_action = QAction('验证工作流', self)
         validate_action.triggered.connect(self.validate_workflow)
         workflow_menu.addAction(validate_action)
+
+        view_result_action = QAction('查看回测结果', self)
+        view_result_action.triggered.connect(self.show_result_tab)
+        workflow_menu.addAction(view_result_action)
+
+        reset_color_action = QAction('重置节点配色', self)
+        reset_color_action.setToolTip('把执行时标记的绿/红配色还原为原始配色')
+        reset_color_action.triggered.connect(self.reset_node_colors)
+        workflow_menu.addAction(reset_color_action)
 
         # 工具菜单
         tools_menu = menubar.addMenu('工具')
@@ -1001,16 +966,38 @@ class RockXQlibMainWindow(QMainWindow):
 
         toolbar.addSeparator()
 
-        # 运行工作流
-        run_action = QAction('运行', self)
-        run_action.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
-        run_action.triggered.connect(self.run_workflow)
-        toolbar.addAction(run_action)
+        # 一键运行 —— 复用菜单里创建的 action（否则会出现两个"运行"按钮，
+        # 且运行期间只有菜单那个会被禁用）。做成绿色醒目样式。
+        try:
+            self.run_action.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+            self.run_action.setText('▶ 一键运行')
+            self.run_action.setToolTip('按数据流顺序执行画布上的全部节点（F5）')
+        except Exception:
+            pass
+        toolbar.addAction(self.run_action)
 
-        # 停止工作流
-        stop_action = QAction('停止', self)
-        stop_action.setIcon(self.style().standardIcon(QStyle.SP_MediaStop))
-        toolbar.addAction(stop_action)
+        # 停止 —— 同样复用
+        try:
+            self.stop_action.setIcon(self.style().standardIcon(QStyle.SP_MediaStop))
+            self.stop_action.setText('■ 停止')
+            self.stop_action.setToolTip('停止工作流（F6，当前节点跑完后生效）')
+        except Exception:
+            pass
+        toolbar.addAction(self.stop_action)
+
+        # 给运行按钮加醒目样式（工具栏级别的 QToolButton 定制）
+        try:
+            run_widget = toolbar.widgetForAction(self.run_action)
+            if run_widget is not None:
+                run_widget.setStyleSheet(
+                    "QToolButton { background-color: #27ae60; color: #ffffff;"
+                    " font-weight: 600; padding: 4px 12px; border-radius: 4px;"
+                    " border: 1px solid #229954; }"
+                    "QToolButton:hover { background-color: #2ecc71; }"
+                    "QToolButton:disabled { background-color: #3a3a3a;"
+                    " color: #808080; border: 1px solid #4a4a4a; }")
+        except Exception as e:
+            print(f"运行按钮样式设置失败（不影响功能）: {e}")
 
         toolbar.addSeparator()
 
@@ -1479,10 +1466,21 @@ class RockXQlibMainWindow(QMainWindow):
                 QMessageBox.critical(self, "错误", f"导出图像失败: {e}")
 
     def run_workflow(self):
-        """运行工作流"""
+        """一键运行工作流：按真实端口连线拓扑排序，依次执行所有节点。"""
         if not NODEGRAPH_AVAILABLE or not self.graph:
-            self.log_message("NodeGraphQt不可用", "ERROR")
-            QMessageBox.warning(self, "警告", "NodeGraphQt不可用")
+            self.log_message("NodeGraphQt 不可用", "ERROR")
+            QMessageBox.warning(self, "警告", "NodeGraphQt 不可用")
+            return
+
+        if not WORKFLOW_RUNNER_AVAILABLE:
+            self.log_message("工作流执行器不可用（core.workflow_runner 导入失败）", "ERROR")
+            QMessageBox.critical(self, "错误", "工作流执行器不可用")
+            return
+
+        # 已有线程在跑就不重复启动
+        if getattr(self, "workflow_thread", None) is not None and \
+                self.workflow_thread.isRunning():
+            QMessageBox.information(self, "提示", "工作流正在运行中，请先等待完成或点击停止。")
             return
 
         try:
@@ -1492,39 +1490,255 @@ class RockXQlibMainWindow(QMainWindow):
                 QMessageBox.information(self, "提示", "画布中没有节点")
                 return
 
-            self.log_message("🚀 开始执行工作流...", "INFO")
+            # 运行前先做一次校验，把"没连线""有环"等问题提前告诉用户
+            warnings = self._preflight_check(nodes)
+            if warnings:
+                for w in warnings:
+                    self.log_message(f"⚠️ {w}", "WARNING")
+                msg = "运行前检查发现问题：\n\n" + "\n".join(f"• {w}" for w in warnings) + \
+                      "\n\n仍要继续运行吗？"
+                if QMessageBox.question(
+                        self, "运行前检查", msg,
+                        QMessageBox.Yes | QMessageBox.No,
+                        QMessageBox.No) != QMessageBox.Yes:
+                    self.log_message("已取消运行", "WARNING")
+                    return
+
+            self.log_message("=" * 56, "INFO")
+            self.log_message("🚀 开始执行工作流（一键运行）", "INFO")
             self.status_label.setText("正在运行工作流...")
             self.system_status_label.setText("系统: 运行中")
+            self.run_action.setEnabled(False)
+            self.stop_action.setEnabled(True)
 
-            # 创建工作流执行线程
-            self.workflow_thread = WorkflowExecutionThread(nodes, self)
+            # 执行前：还原上一轮留下的绿/红配色，并记录原始配色
+            self._restore_node_colors()
+            self._remember_node_colors(nodes)
+
+            self.workflow_thread = WorkflowExecutionThread(nodes, parent=self)
             self.workflow_thread.progress_updated.connect(self.update_workflow_progress)
+            self.workflow_thread.node_started.connect(self._on_node_started)
+            self.workflow_thread.node_finished.connect(self._on_node_finished)
             self.workflow_thread.execution_completed.connect(self._workflow_execution_complete)
             self.workflow_thread.execution_error.connect(self._workflow_execution_error)
-            self.workflow_thread.finished.connect(self.workflow_thread.deleteLater)  # 确保线程正确销毁
+            self.workflow_thread.finished.connect(self._on_workflow_thread_finished)
             self.workflow_thread.start()
 
         except Exception as e:
+            import traceback
             self.log_message(f"运行工作流失败: {e}", "ERROR")
+            self.log_message(traceback.format_exc(), "ERROR")
             QMessageBox.critical(self, "错误", f"运行工作流失败: {e}")
             self.status_label.setText("工作流运行失败")
+
+    def _preflight_check(self, nodes):
+        """运行前静态检查，返回问题列表（不阻断，只提示）。"""
+        warnings = []
+        try:
+            from core.workflow_runner import topological_sort_nodes
+            ordered, warns = topological_sort_nodes(nodes)
+            warnings.extend(warns)
+        except Exception as e:
+            warnings.append(f"拓扑排序检查失败: {e}")
+
+        # 检查有没有节点缺 execute
+        for n in nodes:
+            if not callable(getattr(n, "execute", None)):
+                try:
+                    name = n.name() if callable(getattr(n, "name", None)) else str(n)
+                except Exception:
+                    name = str(n)
+                warnings.append(f"节点「{name}」没有 execute() 方法，运行时会跳过")
+        return warnings
+
+    def stop_workflow(self):
+        """停止工作流（协作式：当前节点跑完后生效）。"""
+        th = getattr(self, "workflow_thread", None)
+        if th is None or not th.isRunning():
+            self.log_message("当前没有正在运行的工作流", "WARNING")
+            return
+        self.log_message("⏹ 已请求停止工作流（将在当前节点执行完后停止）", "WARNING")
+        self.status_label.setText("正在停止工作流...")
+        th.stop_execution()
 
     def update_workflow_progress(self, message, level="INFO"):
         """更新工作流执行进度"""
         self.log_message(message, level)
 
-    def _workflow_execution_complete(self, results):
-        """工作流执行完成"""
-        self.log_message("🎉 工作流执行完成", "SUCCESS")
-        self.status_label.setText("工作流执行完成")
+    def _node_by_label(self, label):
+        """按显示名在画布上找节点（用于执行时高亮）。"""
+        if not (NODEGRAPH_AVAILABLE and self.graph):
+            return None
+        try:
+            for n in self.graph.all_nodes():
+                try:
+                    nm = n.name() if callable(getattr(n, "name", None)) else str(n)
+                except Exception:
+                    nm = str(n)
+                if nm == label:
+                    return n
+        except Exception:
+            pass
+        return None
+
+    def _set_node_color(self, node, rgb):
+        """给节点上色（rgb 为 (r,g,b)）。"""
+        if node is None:
+            return
+        try:
+            node.set_property("color", (rgb[0], rgb[1], rgb[2], 255), push_undo=False)
+        except Exception:
+            try:
+                node.set_property("color", (rgb[0], rgb[1], rgb[2], 255))
+            except Exception:
+                pass
+
+    def _remember_node_colors(self, nodes):
+        """记录运行前的节点颜色，便于结束后还原。"""
+        self._saved_node_colors = {}
+        for n in nodes:
+            try:
+                self._saved_node_colors[id(n)] = n.get_property("color")
+            except Exception:
+                pass
+
+    def _restore_node_colors(self):
+        """还原运行前的节点颜色。"""
+        saved = getattr(self, "_saved_node_colors", None) or {}
+        if not saved or not (NODEGRAPH_AVAILABLE and self.graph):
+            return
+        try:
+            for n in self.graph.all_nodes():
+                col = saved.get(id(n))
+                if col:
+                    try:
+                        n.set_property("color", col, push_undo=False)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        self._saved_node_colors = {}
+
+    def reset_node_colors(self):
+        """菜单入口：把执行时标记的绿/红配色还原为原始配色。"""
+        saved = getattr(self, "_saved_node_colors", None) or {}
+        if not saved:
+            self.log_message("没有可还原的节点配色记录", "WARNING")
+            return
+        self._restore_node_colors()
+        self.log_message("🎨 节点配色已还原", "SUCCESS")
+
+    def _on_node_started(self, label, index, total):
+        """节点开始执行：高亮为橙色。"""
+        self.status_label.setText(f"正在执行 [{index}/{total}] {label} ...")
+        self._set_node_color(self._node_by_label(label), (230, 150, 30))
+
+    def _on_node_finished(self, label, ok, elapsed, detail):
+        """节点执行结束：成功绿色 / 失败红色，并更新状态栏耗时。"""
+        try:
+            self._set_node_color(self._node_by_label(label),
+                                 (39, 174, 96) if ok else (231, 76, 60))
+        except Exception:
+            pass
+        try:
+            if ok:
+                self.status_label.setText(f"完成 {label}（{elapsed:.2f}s）")
+            else:
+                self.status_label.setText(f"失败 {label}：{detail}")
+        except Exception:
+            pass
+
+    def _on_workflow_thread_finished(self):
+        """线程收尾：恢复按钮状态并释放线程对象。"""
+        try:
+            self.run_action.setEnabled(True)
+            self.stop_action.setEnabled(False)
+        except Exception:
+            pass
+        th = getattr(self, "workflow_thread", None)
+        if th is not None:
+            th.deleteLater()
+            self.workflow_thread = None
+
+    def _workflow_execution_complete(self, summary):
+        """工作流执行完成：渲染指标 + 图表，并切到回测结果页。"""
+        summary = summary or {}
+        status = summary.get("status")
+        ok_count = summary.get("ok_count", 0)
+        total = summary.get("total", 0)
+        elapsed = summary.get("elapsed", 0.0)
+
+        if status == "success":
+            self.log_message(
+                f"🎉 工作流执行完成：{ok_count}/{total} 个节点成功，总耗时 {elapsed:.2f}s",
+                "SUCCESS")
+            self.status_label.setText("工作流执行完成")
+        else:
+            self.log_message(
+                f"⚠️ 工作流部分完成：{ok_count}/{total} 个节点成功，总耗时 {elapsed:.2f}s",
+                "WARNING")
+            self.status_label.setText(f"工作流完成（{ok_count}/{total}）")
         self.system_status_label.setText("系统: 正常")
 
-        # 显示执行结果
-        if results:
-            result_text = "\n".join([f"• {k}: {v}" for k, v in results.items()])
-            self.log_message(f"执行结果:\n{result_text}", "SUCCESS")
+        # 逐节点结果汇总到日志
+        records = summary.get("records") or []
+        if records:
+            lines = []
+            for r in records:
+                mark = "✅" if r.get("ok") else "❌"
+                lines.append(f"   {mark} {r.get('node')}  {r.get('elapsed', 0):.2f}s"
+                             + (f"  {r.get('detail')}" if r.get("detail") else ""))
+            self.log_message("执行明细:\n" + "\n".join(lines), "INFO")
 
-        QMessageBox.information(self, "完成", "工作流执行完成")
+        # ---- 回测结果渲染 ----
+        metrics = summary.get("metrics")
+        backtest_result = summary.get("backtest_result")
+        self._render_backtest_results(backtest_result, metrics)
+
+        # 成功且有结果时不再弹窗打断（日志和结果页已经足够），
+        # 只有失败时才弹窗提示。
+        if status != "success":
+            QMessageBox.warning(
+                self, "工作流完成",
+                f"工作流部分完成：{ok_count}/{total} 个节点成功。\n"
+                f"请查看日志了解失败原因。")
+
+    def _render_backtest_results(self, backtest_result, metrics):
+        """把回测结果送到结果面板并切换过去。"""
+        if not BACKTEST_PANEL_AVAILABLE or getattr(self, "result_panel", None) is None:
+            if backtest_result is None and not metrics:
+                self.log_message("本次运行没有产生回测结果", "WARNING")
+            return
+
+        if backtest_result is None and not metrics:
+            self.log_message("本次运行没有产生回测结果，跳过图表渲染", "WARNING")
+            return
+
+        try:
+            rendered = self.result_panel.show_backtest_result(backtest_result, metrics)
+            # 切到"回测结果"页签
+            if getattr(self, "right_tabs", None) is not None:
+                for i in range(self.right_tabs.count()):
+                    if self.right_tabs.tabText(i) == "回测结果":
+                        self.right_tabs.setCurrentIndex(i)
+                        break
+            if metrics:
+                self.log_message(
+                    "📊 回测绩效: 总收益 {:.2f}% | 年化 {:.2f}% | 最大回撤 {:.2f}% | 夏普 {:.2f}".format(
+                        float(metrics.get("total_return", 0)) * 100,
+                        float(metrics.get("annualized_return", 0)) * 100,
+                        float(metrics.get("max_drawdown", 0)) * 100,
+                        float(metrics.get("sharpe", 0))),
+                    "SUCCESS")
+            self.log_message(
+                "📈 回测图表已渲染到右侧「回测结果」页签"
+                if rendered else
+                "⚠️ 指标已显示，但图表未能渲染（详见结果页提示）",
+                "SUCCESS" if rendered else "WARNING")
+        except Exception as e:
+            import traceback
+            self.log_message(f"渲染回测结果失败: {e}", "ERROR")
+            self.log_message(traceback.format_exc(), "ERROR")
 
     def _workflow_execution_error(self, error_message):
         """工作流执行错误"""

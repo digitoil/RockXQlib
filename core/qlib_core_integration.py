@@ -468,11 +468,45 @@ class QlibCoreIntegration:
             logger.error(f"❌ 创建Qlib策略失败: {e}")
             return None
 
+    @staticmethod
+    def _normalize_backtest_config(backtest_config: Dict[str, Any]) -> Dict[str, Any]:
+        """把回测配置归一化，保证 start_time / account 等落在**顶层**。
+
+        ⚠️ 踩过的坑：``WorkflowErrorFixer.fix_backtest_config()`` 返回的结构是::
+
+            {'class': 'Backtest', 'module_path': 'qlib.backtest',
+             'kwargs': {'start_time': ..., 'account': ...}}   # ← 埋在 kwargs 里
+
+        而 ``run_backtest`` 是从**顶层**读的::
+
+            backtest_config.get('start_time', '2017-01-01')
+
+        结果用户在「Qlib回测」节点里配的 start_time / end_time / account /
+        benchmark / exchange_kwargs **全部被静默忽略**，一律退回默认值 ——
+        表现为回测区间永远是 2017-01-01 起（实测 911 个交易日），
+        手续费配置也被丢弃。因为默认值和用户配置常常接近，很容易一直不被发现。
+
+        这里做一次归一化：顶层缺失的键，从 ``kwargs`` 里取。
+        """
+        if not isinstance(backtest_config, dict):
+            return {}
+        cfg = dict(backtest_config)
+        inner = cfg.get("kwargs")
+        if isinstance(inner, dict):
+            for k, v in inner.items():
+                # 顶层已有（且非 None）就不覆盖
+                if k not in cfg or cfg[k] is None:
+                    cfg[k] = v
+        return cfg
+
     def run_backtest(self, backtest_config: Dict[str, Any]) -> Optional[Any]:
         """运行Qlib回测"""
         if not self.qlib_available or not self.qlib_initialized:
             logger.error("Qlib未初始化，无法运行回测")
             return None
+
+        # 归一化：把可能埋在 kwargs 里的 start_time / account 等提到顶层
+        backtest_config = self._normalize_backtest_config(backtest_config)
 
         try:
             from qlib.backtest import backtest
@@ -545,15 +579,29 @@ class QlibCoreIntegration:
             }
             executor = init_instance_by_config(executor_config)
 
+            # 把实际生效的参数打出来 —— 这类"配置被静默忽略"的 bug
+            # 只有对比"配置值 vs 生效值"才能发现
+            _eff_start = backtest_config.get('start_time', '2017-01-01')
+            _eff_end = backtest_config.get('end_time', '2020-12-31')
+            _eff_acct = backtest_config.get('account', 1000000)
+            _eff_bench = backtest_config.get('benchmark', 'SH000300')
+            _eff_ex = backtest_config.get('exchange_kwargs') or {}
+            logger.info(
+                "回测参数(实际生效): %s ~ %s | 初始资金 %s | 基准 %s | 手续费 %s",
+                _eff_start, _eff_end, _eff_acct, _eff_bench,
+                {k: _eff_ex.get(k) for k in
+                 ('open_cost', 'close_cost', 'min_cost', 'limit_threshold')
+                 if k in _eff_ex} or "（qlib 默认）")
+
             # 运行回测
             result = backtest(
                 strategy=strategy,
                 executor=executor,
-                start_time=backtest_config.get('start_time', '2017-01-01'),
-                end_time=backtest_config.get('end_time', '2020-12-31'),
-                account=backtest_config.get('account', 1000000),
-                benchmark=backtest_config.get('benchmark', 'SH000300'),
-                exchange_kwargs=backtest_config.get('exchange_kwargs', {})
+                start_time=_eff_start,
+                end_time=_eff_end,
+                account=_eff_acct,
+                benchmark=_eff_bench,
+                exchange_kwargs=_eff_ex
             )
 
             logger.info("✅ 成功运行Qlib回测")
