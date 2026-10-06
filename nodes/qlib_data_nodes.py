@@ -41,15 +41,31 @@ class QlibAlphaNode(QlibDataNode):
     
     def __init__(self):
         super().__init__()
+
+        # ---- 端口（必须显式声明，否则节点无法连线）----
+        self.add_input('qlib_data')
+        self.add_output('alpha_data')
+
+        # ---- 可编辑属性 ----
+        #
+        # ⚠️ 必须用 add_* API，属性编辑器里才会出现控件。
+        #    原写法是 self.set_property('alpha_type', 'Alpha158') ——
+        #    那只往内部字典写了个值，**不会创建任何 UI 控件**，
+        #    结果是选中节点后属性编辑器一片空白（只有 name 和 Node 分组），
+        #    用户根本没法改参数。本文件里这批节点都犯了这个错。
+        self.add_combo_menu(
+            'alpha_type', 'Alpha类型',
+            ['Alpha158', 'Alpha360', 'Alpha158vwap', 'Alpha360vwap'])
+        self.add_text_input('instruments', '股票池', 'csi300')
+        self.add_text_input('start_time', '数据开始', '2008-01-01')
+        self.add_text_input('end_time', '数据结束', '2020-12-31')
+        self.add_text_input('fit_start_time', '拟合开始', '2008-01-01')
+        self.add_text_input('fit_end_time', '拟合结束', '2014-12-31')
+        self.add_checkbox('enable_cache', '启用缓存', '', True)
+
+        # ---- 内部标记（不暴露给属性编辑器）----
         self.set_property('node_type', 'alpha')
         self.set_property('description', 'Alpha因子数据节点')
-        
-        # Alpha因子特定属性
-        self.set_property('alpha_type', 'Alpha158')  # Alpha158, Alpha360, Alpha158vwap, Alpha360vwap
-        self.set_property('fit_start_time', '2008-01-01')
-        self.set_property('fit_end_time', '2014-12-31')
-        self.set_property('infer_processors', [])
-        self.set_property('learn_processors', [])
     
     def _validate_specific_config(self) -> bool:
         """验证Alpha节点特定配置"""
@@ -529,15 +545,55 @@ class QlibFeatureNode(QlibDataNode):
     
     def __init__(self):
         super().__init__()
+
+        # ---- 端口 ----
+        self.add_input('qlib_data')
+        self.add_output('feature_data')
+
+        # ---- 可编辑属性（同 Alpha 节点：必须用 add_* 才会出现控件）----
+        #
+        # 说明：原属性值有的是 list（如 window_sizes=[5,10,20,30]），
+        # 但 NodeGraphQt 的文本控件只能存字符串，所以这里统一用
+        # 「逗号分隔」的文本形式，取值时用 _parse_list() 转回来。
+        self.add_checkbox('enable_technical', '技术指标', '', True)
+        self.add_checkbox('enable_statistical', '统计特征', '', True)
+        self.add_checkbox('enable_time_series', '时序特征', '', True)
+        self.add_text_input('technical_indicators', '技术指标列表', 'SMA,EMA,RSI,MACD')
+        self.add_text_input('statistical_features', '统计特征列表', 'mean,std,skew,kurt')
+        self.add_text_input('time_series_features', '时序特征列表', 'lag,diff,rolling')
+        self.add_text_input('window_sizes', '窗口大小', '5,10,20,30')
+
+        # ---- 内部标记 ----
         self.set_property('node_type', 'feature')
         self.set_property('description', '特征工程节点')
-        
-        # 特征工程特定属性
-        self.set_property('feature_types', ['technical', 'statistical', 'time_series'])
-        self.set_property('technical_indicators', ['SMA', 'EMA', 'RSI', 'MACD'])
-        self.set_property('statistical_features', ['mean', 'std', 'skew', 'kurt'])
-        self.set_property('time_series_features', ['lag', 'diff', 'rolling'])
-        self.set_property('window_sizes', [5, 10, 20, 30])
+
+    @staticmethod
+    def _parse_list(value, cast=None) -> list:
+        """把「逗号分隔文本」或 list 统一转成列表。
+
+        兼容两种形式：属性编辑器给的是字符串（'5,10,20,30'），
+        而代码里可能直接塞 list（[5, 10, 20, 30]）。
+        """
+        if value is None:
+            return []
+        if isinstance(value, (list, tuple)):
+            items = list(value)
+        else:
+            text = str(value).replace('，', ',')
+            items = [x.strip() for x in text.split(',') if x.strip()]
+        if cast is not None:
+            out = []
+            for x in items:
+                try:
+                    out.append(cast(x))
+                except (TypeError, ValueError):
+                    continue
+            return out
+        return items
+
+    def _get_window_sizes(self) -> list:
+        """窗口大小（int 列表）。"""
+        return self._parse_list(self.get_property('window_sizes'), cast=int)
     
     def _execute_logic(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """执行特征工程逻辑"""
@@ -589,11 +645,11 @@ class QlibFeatureNode(QlibDataNode):
                 close_prices = data['$close']
                 
                 # 简单移动平均
-                for window in self.get_property('window_sizes'):
+                for window in self._get_window_sizes():
                     features[f'SMA_{window}'] = close_prices.rolling(window=window).mean()
                 
                 # 指数移动平均
-                for window in self.get_property('window_sizes'):
+                for window in self._get_window_sizes():
                     features[f'EMA_{window}'] = close_prices.ewm(span=window).mean()
                 
                 # RSI
@@ -622,7 +678,7 @@ class QlibFeatureNode(QlibDataNode):
                 series = data[column]
                 
                 # 滚动统计特征
-                for window in self.get_property('window_sizes'):
+                for window in self._get_window_sizes():
                     features[f'{column}_mean_{window}'] = series.rolling(window=window).mean()
                     features[f'{column}_std_{window}'] = series.rolling(window=window).std()
                     features[f'{column}_skew_{window}'] = series.rolling(window=window).skew()
@@ -653,7 +709,7 @@ class QlibFeatureNode(QlibDataNode):
                 features[f'{column}_diff_2'] = series.diff(2)
                 
                 # 滚动特征
-                for window in self.get_property('window_sizes'):
+                for window in self._get_window_sizes():
                     features[f'{column}_rolling_mean_{window}'] = series.rolling(window=window).mean()
                     features[f'{column}_rolling_std_{window}'] = series.rolling(window=window).std()
             

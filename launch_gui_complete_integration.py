@@ -447,6 +447,10 @@ class RockXQlibMainWindow(QMainWindow):
         if NODEGRAPH_AVAILABLE and self.graph:
             # 先注册所有节点，确保factory有内容
             self.register_all_nodes_to_graph()
+            # 移除框架内置的装饰节点（Backdrop 等）—— 它们不参与工作流，
+            # 显示在节点树里只会干扰。必须在构造 NodesTreeWidget 之前做，
+            # 因为树的分类是在控件构造时按当时 factory 内容生成的。
+            self._hide_framework_nodes()
             # 使用原生NodesTreeWidget
             self.node_tree = NodesTreeWidget(node_graph=self.graph)
             self.node_tree.setStyleSheet(DarkThemeStyles.get_left_sidebar_style())
@@ -460,6 +464,38 @@ class RockXQlibMainWindow(QMainWindow):
             layout.addWidget(self.node_list)
 
         return panel
+
+    def _hide_framework_nodes(self):
+        """把框架内置的装饰节点从节点树里移除。
+
+        NodeGraphQt 在创建 ``NodeGraph`` 时会**自动注册**一批装饰节点，
+        典型是 ``nodeGraphQt.nodes.BackdropNode``（画布上的分组框/注释框）。
+        它不参与工作流执行（没有 ``execute()``），显示在节点树里会让人
+        误以为是可用节点。
+
+        ``factory.nodes`` 返回的是**内部字典本身**（不是副本，见
+        NodeGraphQt/base/factory.py 的 ``nodes`` property），所以可以直接
+        删除键；factory 没有提供 unregister 接口。
+
+        注意：只从**注册表**移除，不影响画布上已存在的实例
+        （已经放上去的 Backdrop 仍能正常显示与拖动）。
+        """
+        if not (NODEGRAPH_AVAILABLE and getattr(self, "graph", None)):
+            return
+        # NodeGraph 内部的工厂叫 `_node_factory`；`factory` 是本程序
+        # 在 __init__ 里动态挂上去的别名。两个都试，避免依赖初始化顺序。
+        factory = (getattr(self.graph, "factory", None)
+                   or getattr(self.graph, "_node_factory", None))
+        nodes = getattr(factory, "nodes", None)
+        if not isinstance(nodes, dict):
+            return
+
+        removed = []
+        for key in [k for k in list(nodes) if k.startswith("nodeGraphQt.")]:
+            nodes.pop(key, None)
+            removed.append(key)
+        if removed:
+            print("[节点树] 已隐藏框架装饰节点: %s" % ", ".join(removed))
 
     # 节点树里类别名 -> 中文标签
     # 树的类别是按标识符前缀自动分组的（'.'.join(nid.split('.')[:-1])），
