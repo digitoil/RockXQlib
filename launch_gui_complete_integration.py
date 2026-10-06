@@ -1634,6 +1634,17 @@ class RockXQlibMainWindow(PipelineGuiMixin, QMainWindow):
         except Exception as e:
             warnings.append(f"拓扑排序检查失败: {e}")
 
+        # 语义检查（日期区间重叠=前视泄漏、JSON 属性非法等）
+        try:
+            from core.workflow_schema import serialize_graph
+            from pipeline.lint import lint_workflow
+            from pipeline.specs import extract_specs
+            lerrs, lwarns = lint_workflow(serialize_graph(self.graph), extract_specs())
+            warnings.extend(lerrs)
+            warnings.extend(w.replace("[警告] ", "") for w in lwarns)
+        except Exception as e:
+            warnings.append(f"参数语义检查跳过: {e}")
+
         # 检查有没有节点缺 execute
         for n in nodes:
             if not callable(getattr(n, "execute", None)):

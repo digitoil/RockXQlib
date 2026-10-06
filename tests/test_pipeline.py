@@ -53,9 +53,9 @@ class CompileTest(unittest.TestCase):
         self.assertEqual(json.loads(wf["nodes"][3]["props"]["model_params"]), {"a": 1})
 
     def test_node_override_and_errors(self):
-        wf, errs = compile_pipeline(CHAIN, overrides={"n3.train_end": "2015-12-31"})
+        wf, errs = compile_pipeline(CHAIN, overrides={"n3.train_end": "2014-06-30"})
         self.assertEqual(errs, [])
-        self.assertEqual(wf["nodes"][2]["props"]["train_end"], "2015-12-31")
+        self.assertEqual(wf["nodes"][2]["props"]["train_end"], "2014-06-30")
         _, errs = compile_pipeline(CHAIN, overrides={"nope": 1})
         self.assertTrue(errs)
         _, errs = compile_pipeline(CHAIN, overrides={"n99.x": 1})
@@ -120,7 +120,7 @@ class RunTest(unittest.TestCase):
         self.assertEqual(len(list_runs(self.runs)), 1)
 
     def test_sweep(self):
-        grid = parse_grid(["u=csi300,csi500", "n3.train_end=2014-12-31,2015-12-31"])
+        grid = parse_grid(["u=csi300,csi500", "n3.train_start=2008-01-01,2010-01-01"])
         self.assertEqual(len(expand(grid)), 4)
         res = run_sweep(CHAIN, grid, backend="dry", runs_dir=self.runs)
         self.assertEqual(len(res), 4)
@@ -165,12 +165,41 @@ class CompareTest(unittest.TestCase):
         from pipeline.runs import best_of, compare_text, diff_props
         with tempfile.TemporaryDirectory() as t:
             runs = []
-            for end, sharpe, dd in (("2014-12-31", 1.0, -0.30), ("2015-12-31", 1.4, -0.20)):
-                wf, _, _ = prepare(CHAIN, {"n3.train_end": end})
+            for end, sharpe, dd in (("2008-01-01", 1.0, -0.30), ("2010-01-01", 1.4, -0.20)):
+                wf, _, _ = prepare(CHAIN, {"n3.train_start": end})
                 d = record_run(wf, {"status": "success", "elapsed": 1,
                                     "metrics": {"sharpe": sharpe, "max_drawdown": dd}},
                                runs_dir=Path(t), tag=end[:4])
                 runs.append(json.loads((d / "manifest.json").read_text()) | {"run_dir": str(d)})
-            self.assertEqual([x["key"] for x in diff_props(runs)], ["n3.train_end"])
+            self.assertEqual([x["key"] for x in diff_props(runs)], ["n3.train_start"])
             self.assertEqual(best_of(runs), {"sharpe": 1, "max_drawdown": 1})
-            self.assertIn("n3.train_end", compare_text(runs))
+            self.assertIn("n3.train_start", compare_text(runs))
+
+
+class LintTest(unittest.TestCase):
+    def _errs(self, overrides):
+        _, errs, warns = prepare(CHAIN, overrides)
+        return errs, warns
+
+    def test_clean_defaults(self):
+        errs, _ = self._errs({})
+        self.assertEqual(errs, [])
+
+    def test_bad_json_and_date(self):
+        errs, _ = self._errs({"n4.model_params": "{oops"})
+        self.assertTrue(any("JSON" in e for e in errs))
+        errs, _ = self._errs({"n3.train_end": "2015/12/31"})
+        self.assertTrue(any("YYYY-MM-DD" in e for e in errs))
+
+    def test_segment_overlap_is_leak(self):
+        errs, _ = self._errs({"n3.train_end": "2016-06-30"})  # 与 valid_start 2015 重叠
+        self.assertTrue(any("前视泄漏" in e for e in errs))
+
+    def test_reversed_range(self):
+        errs, _ = self._errs({"n6.start_time": "2021-01-01", "n6.end_time": "2020-01-01"})
+        self.assertTrue(any("晚于" in e for e in errs))
+
+    def test_backtest_outside_test_and_benchmark_warn(self):
+        _, warns = self._errs({"n6.start_time": "2010-01-01", "n6.benchmark": "SH000905"})
+        self.assertTrue(any("早于测试集" in w for w in warns))
+        self.assertTrue(any("基准" in w for w in warns))

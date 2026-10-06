@@ -293,7 +293,7 @@ class PipelineGuiMixin:
         lay = QVBoxLayout(dlg)
         lay.addWidget(QLabel("每行一个参数：节点id.属性=值1,值2,...（组合数 = 各行取值数相乘）"))
         edit = QPlainTextEdit()
-        edit.setPlaceholderText("n3.train_end=2014-12-31,2015-12-31\nn4.model_class=LGBModel,XGBModel")
+        edit.setPlaceholderText("n3.train_start=2008-01-01,2010-01-01\nn4.model_class=LGBModel,XGBModel")
         lay.addWidget(edit)
         lay.addWidget(QLabel("画布节点 id 对照："))
         ids = QPlainTextEdit(ref)
@@ -317,6 +317,21 @@ class PipelineGuiMixin:
                     nid, _, prop = k.partition(".")
                     if prop not in props_of.get(nid, {}):
                         raise ValueError("画布上没有 %s（格式：节点id.属性）" % k)
+            # 逐组合做语义检查：日期颠倒、区间重叠（前视泄漏）等，跑之前就拦下
+            import copy
+            from pipeline.lint import lint_workflow
+            from pipeline.specs import extract_specs
+            bad = []
+            for c in combos:
+                w2 = copy.deepcopy(wf)
+                for k, v in c.items():
+                    nid, _, prop = k.partition(".")
+                    next(n for n in w2["nodes"] if n["id"] == nid)["props"][prop] = v
+                errs, _ = lint_workflow(w2, extract_specs())
+                if errs:
+                    bad.append("%s → %s" % (c, errs[0]))
+            if bad:
+                raise ValueError("以下组合不合法，未运行：\n" + "\n".join(bad[:6]))
         except Exception as e:
             QMessageBox.critical(self, "参数有误", str(e))
             return

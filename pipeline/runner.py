@@ -25,6 +25,7 @@ from core.workflow_runner import NodeGraphWorkflowRunner
 from core.workflow_schema import deserialize_graph, validate_workflow
 
 from .backends import make_graph
+from .lint import lint_workflow
 from .definition import compile_pipeline, dangling_inputs, load_pipeline_file, parse_overrides
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -76,6 +77,10 @@ def prepare(source: Any, overrides: Optional[Dict[str, Any]] = None,
     errors = [m for m in msgs if not m.startswith("[警告]")]
     warnings = [m for m in msgs if m.startswith("[警告]")]
     warnings += ["[警告] " + m for m in dangling_inputs(wf, specs)]
+    if not errors:
+        lerrs, lwarns = lint_workflow(wf, specs)
+        errors += lerrs
+        warnings += lwarns
     return wf, errors, warnings
 
 
