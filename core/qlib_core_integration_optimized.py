@@ -92,9 +92,17 @@ class QlibCoreIntegrationOptimized:
                     is_initialized = False
                 
                 if not is_initialized:
-                    # 设置默认数据路径
+                    # 设置默认数据路径（自动探测，避免写死不存在的目录）
                     if provider_uri is None:
-                        provider_uri = "~/.qlib/qlib_data/cn_data"
+                        try:
+                            from .qlib_paths import get_default_provider_uri
+                            provider_uri = get_default_provider_uri()
+                        except ImportError:
+                            try:
+                                from qlib_paths import get_default_provider_uri
+                                provider_uri = get_default_provider_uri()
+                            except ImportError:
+                                provider_uri = "~/.qlib/qlib_data/cn_data"
                     
                     # 初始化Qlib
                     qlib.init(

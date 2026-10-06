@@ -14,6 +14,24 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+
+def _detect_provider_uri() -> str:
+    """探测可用的 qlib 数据目录，作为配置默认值。
+
+    原来默认写死 'D:\\\\qlib_data'，本机并不存在（真实数据在
+    <项目>/../RockXFWV21/qlib_data/cn_data）。
+    """
+    try:
+        from .qlib_paths import get_default_provider_uri
+        return get_default_provider_uri()
+    except ImportError:
+        try:
+            from qlib_paths import get_default_provider_uri
+            return get_default_provider_uri()
+        except ImportError:
+            return "~/.qlib/qlib_data/cn_data"
+
+
 class ConfigManager:
     """配置管理器"""
     
@@ -41,6 +59,54 @@ class ConfigManager:
         except Exception as e:
             logger.error(f"❌ 配置文件加载失败: {e}")
             self.config = self._get_default_config()
+
+        # 加载后修正无效路径
+        self._fix_invalid_paths()
+
+    def _fix_invalid_paths(self):
+        """把配置里指向不存在目录的 provider_uri 换成自动探测到的真实路径。
+
+        YAML 里写的是 ``D:\\qlib_data``（本机并不存在），而且它**会覆盖**
+        代码里的默认值 —— 只在代码里改默认值是没用的。
+        这里做一次运行时校验：配置里的路径不可用就替换成探测结果。
+        这样配置文本保持可移植，实际生效的却是本机真实路径。
+        """
+        try:
+            from .qlib_paths import is_qlib_data_dir, get_default_provider_uri
+        except ImportError:
+            try:
+                from qlib_paths import is_qlib_data_dir, get_default_provider_uri
+            except ImportError:
+                return
+
+        if not isinstance(self.config, dict):
+            return
+
+        fixed = []
+
+        def _check(container, key, where):
+            cur = container.get(key) if isinstance(container, dict) else None
+            if isinstance(cur, str) and cur and not is_qlib_data_dir(cur):
+                container[key] = get_default_provider_uri()
+                fixed.append("%s (%s -> %s)" % (where, cur, container[key]))
+
+        # 1) integration.qlib.provider_uri
+        integ = self.config.get("integration")
+        if isinstance(integ, dict) and isinstance(integ.get("qlib"), dict):
+            _check(integ["qlib"], "provider_uri", "integration.qlib")
+
+        # 2) 工作流模板里各节点的 provider_uri
+        tpls = self.config.get("workflow_templates")
+        if isinstance(tpls, dict):
+            for tname, tpl in tpls.items():
+                for node in (tpl or {}).get("nodes", []) or []:
+                    props = node.get("properties")
+                    if isinstance(props, dict) and "provider_uri" in props:
+                        _check(props, "provider_uri",
+                               "workflow_templates.%s" % tname)
+
+        if fixed:
+            logger.info("🔧 已修正配置中无效的 provider_uri: %s", "; ".join(fixed))
     
     def _get_default_config(self) -> Dict[str, Any]:
         """获取默认配置"""
@@ -70,7 +136,8 @@ class ConfigManager:
             'integration': {
                 'qlib': {
                     'auto_init': True,
-                    'provider_uri': 'D:\\qlib_data',
+                    # 自动探测真实数据目录（原来写死 'D:\\qlib_data'，本机不存在）
+                    'provider_uri': _detect_provider_uri(),
                     'region': 'cn',
                     'enable_exp_recorder': True
                 }

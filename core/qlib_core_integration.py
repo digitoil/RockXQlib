@@ -113,6 +113,24 @@ class QlibCoreIntegration:
         except Exception:
             return False
 
+    @staticmethod
+    def _default_provider_uri() -> str:
+        """自动探测可用的 qlib 数据目录。
+
+        原来这里写死 ``~/.qlib/qlib_data/cn_data``，但本机并没有这个目录
+        （真实数据在 ``<项目>/../RockXFWV21/qlib_data/cn_data``），
+        于是不显式指定 provider_uri 时会落到一个不存在的路径上。
+        """
+        try:
+            from .qlib_paths import get_default_provider_uri
+            return get_default_provider_uri()
+        except ImportError:
+            try:
+                from qlib_paths import get_default_provider_uri
+                return get_default_provider_uri()
+            except ImportError:
+                return os.path.expanduser("~/.qlib/qlib_data/cn_data")
+
     def initialize_qlib(self, provider_uri: str = None, region: str = "cn",
                        enable_exp_recorder: bool = True) -> bool:
         """初始化Qlib"""
@@ -146,7 +164,9 @@ class QlibCoreIntegration:
                 current_provider = ""
 
             if provider_uri is None:
-                provider_uri = os.path.expanduser("~/.qlib/qlib_data/cn_data")
+                # 自动探测真实数据目录，而不是写死一个不存在的路径
+                # （原来是 '~/.qlib/qlib_data/cn_data'，本机并不存在）
+                provider_uri = self._default_provider_uri()
 
             def _norm(p):
                 return os.path.normcase(os.path.normpath(str(p)))

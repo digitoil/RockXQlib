@@ -182,7 +182,17 @@ class RockXQlibBaseNode(BaseNode):
         """初始化Qlib相关属性"""
         if QLIB_AVAILABLE:
             # 添加Qlib配置属性
-            self.add_text_input('provider_uri', '数据路径', '~/.qlib/qlib_data/cn_data')
+            # 默认路径自动探测，避免写死一个不存在的目录
+            try:
+                from qlib_paths import get_default_provider_uri
+                _default_uri = get_default_provider_uri()
+            except ImportError:
+                try:
+                    from core.qlib_paths import get_default_provider_uri
+                    _default_uri = get_default_provider_uri()
+                except ImportError:
+                    _default_uri = '~/.qlib/qlib_data/cn_data'
+            self.add_text_input('provider_uri', '数据路径', _default_uri)
             self.add_text_input('region', '地区', 'cn')
             self.add_checkbox('enable_recording', '启用记录', '启用记录', False)
             self.add_text_input('experiment_name', '实验名称', 'rockxqlib_experiment')

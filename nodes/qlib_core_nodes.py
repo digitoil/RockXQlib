@@ -136,7 +136,14 @@ class QlibInitNode(QlibCoreBaseNode):
         self.add_output('initialized_qlib')
 
         # 添加属性
-        self.add_text_input('provider_uri', '数据源URI', 'D:\\qlib_data')
+        # 默认数据路径用自动探测的结果 —— 原来写死 'D:\qlib_data'，
+        # 这个目录在本机并不存在，新建节点后不动这个属性就会取数失败。
+        try:
+            from core.qlib_paths import get_default_provider_uri
+            _default_uri = get_default_provider_uri()
+        except Exception:
+            _default_uri = "~/.qlib/qlib_data/cn_data"
+        self.add_text_input('provider_uri', '数据源URI', _default_uri)
         self.add_text_input('region', '区域', 'cn')
         self.add_checkbox('enable_exp_recorder', '启用实验记录', '启用实验记录', True)
 
