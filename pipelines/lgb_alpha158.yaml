@@ -1,0 +1,33 @@
+# LGB + Alpha158 + TopkDropout 基线流水线
+# 运行:  python -m pipeline run pipelines/lgb_alpha158.yaml
+# 换股票池: python -m pipeline run pipelines/lgb_alpha158.yaml --set universe=csi500
+name: lgb_alpha158
+params:
+  universe: csi300
+  train_start: "2008-01-01"
+  train_end: "2014-12-31"
+  valid_start: "2015-01-01"
+  valid_end: "2016-12-31"
+  test_start: "2017-01-01"
+  test_end: "2020-08-01"
+steps:
+  - init
+  - type: data
+    props: {instruments: "${universe}", start_time: "${train_start}", end_time: "${test_end}"}
+  - type: dataset
+    props:
+      handler_class: Alpha158
+      instruments: "${universe}"
+      train_start: "${train_start}"
+      train_end: "${train_end}"
+      valid_start: "${valid_start}"
+      valid_end: "${valid_end}"
+      test_start: "${test_start}"
+      test_end: "${test_end}"
+  - type: model
+    props:
+      model_class: LGBModel
+      model_params: {num_leaves: 64, learning_rate: 0.05}
+  - strategy
+  - type: backtest
+    props: {start_time: "${test_start}", end_time: "${test_end}"}

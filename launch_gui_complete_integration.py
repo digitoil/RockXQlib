@@ -297,7 +297,22 @@ except ImportError as e:
     BacktestResultPanel = None  # type: ignore
     print(f"❌ 回测结果面板导入失败: {e}")
 
-class RockXQlibMainWindow(QMainWindow):
+try:
+    from gui.pipeline_panel import PipelineGuiMixin
+    PIPELINE_GUI_AVAILABLE = True
+except ImportError as e:
+    PIPELINE_GUI_AVAILABLE = False
+    print(f"⚠️ 流水线面板不可用: {e}")
+
+    class PipelineGuiMixin:  # type: ignore
+        """占位：缺依赖时菜单项提示不可用，不影响主程序。"""
+        def __getattr__(self, name):
+            if name.startswith("pipeline_"):
+                return lambda *a, **k: QMessageBox.warning(self, "功能不可用", "流水线模块未加载")
+            raise AttributeError(name)
+
+
+class RockXQlibMainWindow(PipelineGuiMixin, QMainWindow):
     """RockXQlib主窗口"""
 
     def __init__(self):
@@ -876,6 +891,24 @@ class RockXQlibMainWindow(QMainWindow):
         self.stop_action.setEnabled(False)
         self.stop_action.triggered.connect(self.stop_workflow)
         workflow_menu.addAction(self.stop_action)
+
+        workflow_menu.addSeparator()
+
+        tpl_action = QAction('从模板新建…', self)
+        tpl_action.triggered.connect(self.pipeline_new_from_template)
+        workflow_menu.addAction(tpl_action)
+
+        save_tpl_action = QAction('保存当前画布为模板…', self)
+        save_tpl_action.triggered.connect(self.pipeline_save_as_template)
+        workflow_menu.addAction(save_tpl_action)
+
+        ai_action = QAction('AI 生成工作流…', self)
+        ai_action.triggered.connect(self.pipeline_ai_generate)
+        workflow_menu.addAction(ai_action)
+
+        runs_action = QAction('运行记录…', self)
+        runs_action.triggered.connect(self.pipeline_show_runs)
+        workflow_menu.addAction(runs_action)
 
         workflow_menu.addSeparator()
 
@@ -1745,6 +1778,9 @@ class RockXQlibMainWindow(QMainWindow):
                 lines.append(f"   {mark} {r.get('node')}  {r.get('elapsed', 0):.2f}s"
                              + (f"  {r.get('detail')}" if r.get("detail") else ""))
             self.log_message("执行明细:\n" + "\n".join(lines), "INFO")
+
+        # 每次一键运行都落一份可复现的运行记录（画布 + 结果）
+        self.pipeline_record_gui_run(summary)
 
         # ---- 回测结果渲染 ----
         metrics = summary.get("metrics")

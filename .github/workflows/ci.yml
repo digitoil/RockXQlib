@@ -1,0 +1,19 @@
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: pip install pyyaml
+      - name: 核心纯净性守门
+        run: python tests/test_core_purity.py
+      - name: 流水线层测试（无 Qt / qlib）
+        run: python -m unittest tests.test_pipeline -v
+      - name: 模板演练（接线与数据流）
+        run: |
+          for f in pipelines/*.yaml; do python -m pipeline run "$f" --backend dry --runs-dir /tmp/runs; done
