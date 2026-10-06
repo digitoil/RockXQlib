@@ -203,3 +203,24 @@ class LintTest(unittest.TestCase):
         _, warns = self._errs({"n6.start_time": "2010-01-01", "n6.benchmark": "SH000905"})
         self.assertTrue(any("早于测试集" in w for w in warns))
         self.assertTrue(any("基准" in w for w in warns))
+
+
+class FailureDetailTest(unittest.TestCase):
+    """节点只 print 原因再 return False 时，运行汇总里必须保留原因（供诊断）。"""
+
+    def test_print_reason_captured(self):
+        from core.workflow_runner import NodeGraphWorkflowRunner
+
+        class N:
+            def name(self): return "数据节点"
+            def inputs(self): return {}
+            def outputs(self): return {}
+            def execute(self):
+                print("普通输出")
+                print("❌ Qlib数据节点执行失败: provider_uri 不存在")
+                return False
+
+        rec = NodeGraphWorkflowRunner([N()]).run()["records"][0]
+        self.assertFalse(rec["ok"])
+        self.assertIn("provider_uri 不存在", rec["detail"])
+        self.assertNotIn("普通输出", rec["detail"])

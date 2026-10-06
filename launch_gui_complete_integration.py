@@ -902,7 +902,7 @@ class RockXQlibMainWindow(PipelineGuiMixin, QMainWindow):
         save_tpl_action.triggered.connect(self.pipeline_save_as_template)
         workflow_menu.addAction(save_tpl_action)
 
-        ai_action = QAction('AI 生成工作流…', self)
+        ai_action = QAction('AI 建模助手（对话）', self)
         ai_action.triggered.connect(self.pipeline_ai_generate)
         workflow_menu.addAction(ai_action)
 

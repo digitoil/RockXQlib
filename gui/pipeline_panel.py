@@ -20,24 +20,6 @@ from PySide6.QtWidgets import (
 PIPELINES_DIR = Path(__file__).resolve().parent.parent / "pipelines"
 
 
-class _GenerateThread(QThread):
-    done = Signal(object, list)   # doc|None, trail
-
-    def __init__(self, request, base_url, model, api_key, specs, parent=None):
-        super().__init__(parent)
-        self._a = (request, base_url, model, api_key, specs)
-
-    def run(self):
-        from pipeline.llm import generate_pipeline, openai_compatible_chat
-        request, base_url, model, api_key, specs = self._a
-        try:
-            doc, trail = generate_pipeline(
-                request, openai_compatible_chat(base_url, model, api_key), specs=specs)
-        except Exception as e:  # 服务未启动 / 网络错误
-            doc, trail = None, ["调用 LLM 失败: %s" % e]
-        self.done.emit(doc, trail)
-
-
 class PipelineGuiMixin:
     """混入 RockXQlibMainWindow。依赖：self.graph / self.log_message / self.status_label。"""
 
@@ -125,67 +107,18 @@ class PipelineGuiMixin:
         dump_workflow(serialize_graph(self.graph, name=name.strip()), str(dest))
         self.log_message("已保存模板: %s" % dest, "SUCCESS")
 
-    # ---------- AI 生成（预览确认）----------
+    # ---------- AI 建模助手（交互式）----------
     def pipeline_ai_generate(self):
-        dlg = QDialog(self)
-        dlg.setWindowTitle("AI 生成工作流（先预览，确认后才落到画布）")
-        dlg.resize(560, 360)
-        lay = QVBoxLayout(dlg)
-        req = QPlainTextEdit()
-        req.setPlaceholderText("描述需求，例如：用 CSI500 股票池，LGB 模型，2019 年起回测")
-        lay.addWidget(req)
-        form = QFormLayout()
-        url = QLineEdit(os.environ.get("LLM_BASE_URL", "http://localhost:11434/v1"))
-        model = QLineEdit(os.environ.get("LLM_MODEL", ""))
-        key = QLineEdit(os.environ.get("LLM_API_KEY", ""))
-        key.setEchoMode(QLineEdit.Password)
-        form.addRow("接口地址", url)
-        form.addRow("模型", model)
-        form.addRow("API Key", key)
-        lay.addLayout(form)
-        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.button(QDialogButtonBox.Ok).setText("生成")
-        bb.accepted.connect(dlg.accept)
-        bb.rejected.connect(dlg.reject)
-        lay.addWidget(bb)
-        if dlg.exec() != QDialog.Accepted:
-            return
-        if not req.toPlainText().strip() or not model.text().strip():
-            QMessageBox.warning(self, "提示", "需求和模型名不能为空")
-            return
-        self.log_message("AI 生成中…（调用 %s / %s）" % (url.text(), model.text()), "INFO")
-        self.status_label.setText("AI 生成中…")
-        th = _GenerateThread(req.toPlainText().strip(), url.text().strip(),
-                             model.text().strip(), key.text().strip(),
-                             self._specs_for_pipeline(), self)
-        th.done.connect(self._on_ai_generated)
-        th.finished.connect(lambda: setattr(self, "_ai_thread", None))
-        self._ai_thread = th
-        th.start()
-
-    def _on_ai_generated(self, doc, trail):
-        for t in trail:
-            self.log_message("AI: " + t, "INFO")
-        self.status_label.setText("就绪")
-        if doc is None:
-            QMessageBox.warning(self, "未生成",
-                                "没能得到通过校验的工作流：\n\n" + "\n".join(trail[-3:]))
-            return
-        dlg = QDialog(self)
-        dlg.setWindowTitle("预览 AI 生成的工作流")
-        dlg.resize(560, 460)
-        lay = QVBoxLayout(dlg)
-        lay.addWidget(QLabel("已通过结构校验。确认后载入画布（会替换当前画布，可 Ctrl+Z 之外请先保存）："))
-        txt = QPlainTextEdit(json.dumps(doc, ensure_ascii=False, indent=2))
-        txt.setReadOnly(True)
-        lay.addWidget(txt)
-        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.button(QDialogButtonBox.Ok).setText("载入画布")
-        bb.accepted.connect(dlg.accept)
-        bb.rejected.connect(dlg.reject)
-        lay.addWidget(bb)
-        if dlg.exec() == QDialog.Accepted:
-            self._load_pipeline_doc_to_canvas(doc, title="AI 工作流")
+        """显示 / 隐藏右侧「AI 建模助手」面板（首次调用时创建）。"""
+        from gui.assistant_dock import AssistantDock
+        dock = getattr(self, "_assistant_dock", None)
+        if dock is None:
+            dock = AssistantDock(self)
+            self.addDockWidget(Qt.RightDockWidgetArea, dock)
+            self._assistant_dock = dock
+        dock.setVisible(not dock.isVisible() if getattr(self, "_assistant_dock_seen", False)
+                        else True)
+        self._assistant_dock_seen = True
 
     # ---------- 运行记录 ----------
     def pipeline_record_gui_run(self, summary):
@@ -198,6 +131,13 @@ class PipelineGuiMixin:
             self.log_message("运行记录已保存: %s" % d.name, "INFO")
         except Exception as e:
             self.log_message("保存运行记录失败: %s" % e, "WARNING")
+        # 无论存档是否成功，都把真实结果交给助手面板（若已打开）
+        dock = getattr(self, "_assistant_dock", None)
+        if dock is not None:
+            try:
+                dock.on_run_finished(summary)
+            except Exception as e:
+                self.log_message("助手面板更新失败: %s" % e, "WARNING")
 
     def pipeline_show_runs(self):
         from pipeline.runs import _flat_metrics, list_runs
