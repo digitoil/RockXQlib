@@ -16,10 +16,62 @@ from typing import Dict, Any, Optional, List, Union
 # 添加路径
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# 添加Kronos路径
-kronos_path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'PanShiBaseLib', 'Kronos')
-if os.path.exists(kronos_path):
-    sys.path.insert(0, kronos_path)
+
+# ---------------------------------------------------------------------------
+# 定位 Kronos 库
+#
+# 原实现只试一个硬编码的相对路径：
+#     <RockXQlib>/nodes/../../../PanShiBaseLib/Kronos
+# 即 E:\2025\PanShiBaseLib\Kronos —— 这个目录**根本不存在**，
+# 而真实的库在 E:\2025\PanShiAIQuant\PanShiBaseLib\Kronos 等位置，
+# 结果 Kronos 节点一直静默降级成占位实现（不会报错，只是功能是假的）。
+#
+# 这里改成按候选列表逐个探测，并且**校验候选里真的有 model/kronos.py**，
+# 避免把同名但无关的目录当成果。也支持用环境变量 KRONOS_PATH 显式指定。
+# ---------------------------------------------------------------------------
+def _resolve_kronos_path():
+    here = os.path.dirname(os.path.abspath(__file__))
+    proj = os.path.dirname(here)                      # <RockXQlib>
+    root = os.path.dirname(proj)                      # E:\2025\RockX20251003
+
+    candidates = []
+    # 1) 环境变量显式指定（优先级最高）
+    env_p = os.environ.get("KRONOS_PATH")
+    if env_p:
+        candidates.append(env_p)
+    # 2) 相对本项目的常见位置
+    candidates += [
+        os.path.join(root, "PanShiBaseLib", "Kronos"),
+        os.path.join(proj, "PanShiBaseLib", "Kronos"),
+        os.path.join(root, "Kronos"),
+    ]
+    # 3) 同盘其他项目下的 PanShiBaseLib/Kronos（本机实际布局）
+    drive = os.path.splitdrive(root)[0] + os.sep
+    for sub in ("2025", ""):
+        for proj_name in ("PanShiAIQuant", "0915AIQuantPyTorch", "AIQuantTF",
+                          "09131505备份AIQuantPyTorch"):
+            candidates.append(os.path.join(drive, sub, proj_name,
+                                           "PanShiBaseLib", "Kronos"))
+
+    for cand in candidates:
+        if not cand:
+            continue
+        cand = os.path.abspath(cand)
+        # 必须真的有 model/kronos.py，否则是同名无关目录
+        if os.path.isfile(os.path.join(cand, "model", "kronos.py")):
+            return cand
+    return None
+
+
+_kronos_path = _resolve_kronos_path()
+if _kronos_path:
+    if _kronos_path not in sys.path:
+        sys.path.insert(0, _kronos_path)
+    print(f"✅ 已定位 Kronos 库: {_kronos_path}")
+else:
+    print("⚠️ 未找到 Kronos 库（可用环境变量 KRONOS_PATH 指定），"
+          "Kronos 节点将使用占位实现")
+
 
 # NodeGraphQt 是硬依赖，必须显式失败；qlib_core 与 Kronos 模型各自独立降级。
 # 原实现把三者放在同一个 try 里，任一导入失败就把 BaseNode 换成空壳占位类，
@@ -37,9 +89,18 @@ except ImportError as _e:
 try:
     from model import Kronos, KronosTokenizer, KronosPredictor
     KRONOS_AVAILABLE = True
+    print("✅ Kronos 模型导入成功（真实实现）")
 except ImportError as e:
-    print(f"Kronos模型导入失败: {e}")
     KRONOS_AVAILABLE = False
+    # 区分"库没找到"和"依赖缺失"，否则用户看到
+    # "No module named 'einops'" 根本不知道要装什么
+    if _kronos_path is None:
+        print("⚠️ Kronos 库未找到，Kronos 节点使用占位实现。"
+              "可用环境变量 KRONOS_PATH 指向库根目录。")
+    else:
+        print(f"⚠️ Kronos 库已找到（{_kronos_path}）但导入失败: {e}")
+        print("   多半是缺依赖，尝试: pip install einops huggingface_hub safetensors")
+    print("   Kronos 节点将使用占位实现（功能不可用，但不会报错）")
 
     class Kronos:
         @staticmethod

@@ -33,6 +33,8 @@ logger = logging.getLogger(__name__)
 
 class QlibBacktestNode(QlibBaseNode):
     """回测节点"""
+
+    __identifier__ = 'qlib.backtest.basic'
     NODE_NAME = "Qlib Backtest"
     NODE_CATEGORY = "Qlib/Backtest"
     
@@ -133,6 +135,8 @@ class QlibBacktestNode(QlibBaseNode):
 
 class QlibSimulatorNode(QlibBaseNode):
     """模拟器节点"""
+
+    __identifier__ = 'qlib.backtest.simulator'
     NODE_NAME = "Qlib Simulator"
     NODE_CATEGORY = "Qlib/Backtest"
     

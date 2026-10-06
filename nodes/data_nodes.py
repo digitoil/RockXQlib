@@ -38,6 +38,9 @@ logger = logging.getLogger(__name__)
 
 class RockXQlibDataNode(RockXQlibBaseNode):
     """基础数据节点 - 与Qlib D接口集成"""
+
+    __identifier__ = 'qlib.legacy.data'
+    NODE_NAME = '数据节点(旧)'
     
     def __init__(self):
         super().__init__()
@@ -136,6 +139,9 @@ class RockXQlibDataNode(RockXQlibBaseNode):
 
 class RockXQlibAlphaNode(RockXQlibBaseNode):
     """Alpha因子数据节点 - 基于Qlib Alpha158/Alpha360"""
+
+    __identifier__ = 'qlib.legacy.alpha'
+    NODE_NAME = 'Alpha因子(旧)'
     
     def __init__(self):
         super().__init__()
@@ -252,6 +258,9 @@ class RockXQlibAlphaNode(RockXQlibBaseNode):
 
 class RockXQlibHighFreqNode(RockXQlibBaseNode):
     """高频数据节点 - 支持Tick数据和订单簿数据"""
+
+    __identifier__ = 'qlib.legacy.highfreq'
+    NODE_NAME = '高频数据(旧)'
     
     def __init__(self):
         super().__init__()
@@ -395,6 +404,9 @@ class RockXQlibHighFreqNode(RockXQlibBaseNode):
 
 class RockXQlibCustomDataNode(RockXQlibBaseNode):
     """自定义数据节点 - 支持多种数据源"""
+
+    __identifier__ = 'qlib.legacy.custom'
+    NODE_NAME = '自定义数据(旧)'
     
     def __init__(self):
         super().__init__()

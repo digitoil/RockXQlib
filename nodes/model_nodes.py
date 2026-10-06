@@ -45,6 +45,8 @@ logger = logging.getLogger(__name__)
 
 class QlibLinearNode(QlibModelNode):
     """线性模型节点"""
+
+    __identifier__ = 'qlib.model.linear'
     NODE_NAME = "Qlib Linear Model"
     NODE_CATEGORY = "Qlib/Model"
     
@@ -112,6 +114,8 @@ class QlibLinearNode(QlibModelNode):
 
 class QlibTreeNode(QlibModelNode):
     """树模型节点"""
+
+    __identifier__ = 'qlib.model.tree'
     NODE_NAME = "Qlib Tree Model"
     NODE_CATEGORY = "Qlib/Model"
     
@@ -209,6 +213,8 @@ class QlibTreeNode(QlibModelNode):
 
 class QlibEnsembleNode(QlibModelNode):
     """集成模型节点"""
+
+    __identifier__ = 'qlib.model.ensemble'
     NODE_NAME = "Qlib Ensemble Model"
     NODE_CATEGORY = "Qlib/Model"
     
@@ -301,6 +307,8 @@ class QlibEnsembleNode(QlibModelNode):
 
 class QlibLSTMNode(QlibModelNode):
     """LSTM模型节点"""
+
+    __identifier__ = 'qlib.model.lstm'
     NODE_NAME = "Qlib LSTM Model"
     NODE_CATEGORY = "Qlib/Model"
     
@@ -374,6 +382,8 @@ class QlibLSTMNode(QlibModelNode):
 
 class QlibGRUNode(QlibModelNode):
     """GRU模型节点"""
+
+    __identifier__ = 'qlib.model.gru'
     NODE_NAME = "Qlib GRU Model"
     NODE_CATEGORY = "Qlib/Model"
     
@@ -447,6 +457,8 @@ class QlibGRUNode(QlibModelNode):
 
 class QlibTransformerNode(QlibModelNode):
     """Transformer模型节点"""
+
+    __identifier__ = 'qlib.model.transformer'
     NODE_NAME = "Qlib Transformer Model"
     NODE_CATEGORY = "Qlib/Model"
     
@@ -522,6 +534,8 @@ class QlibTransformerNode(QlibModelNode):
 
 class QlibCNNNode(QlibModelNode):
     """CNN模型节点"""
+
+    __identifier__ = 'qlib.model.cnn'
     NODE_NAME = "Qlib CNN Model"
     NODE_CATEGORY = "Qlib/Model"
     
@@ -597,6 +611,8 @@ class QlibCNNNode(QlibModelNode):
 
 class QlibRLNode(QlibModelNode):
     """强化学习模型节点"""
+
+    __identifier__ = 'qlib.model.rl'
     NODE_NAME = "Qlib RL Model"
     NODE_CATEGORY = "Qlib/Model"
     
@@ -671,6 +687,8 @@ class QlibRLNode(QlibModelNode):
 
 class QlibDQNNode(QlibModelNode):
     """DQN模型节点"""
+
+    __identifier__ = 'qlib.model.dqn'
     NODE_NAME = "Qlib DQN Model"
     NODE_CATEGORY = "Qlib/Model"
     
@@ -746,6 +764,8 @@ class QlibDQNNode(QlibModelNode):
 
 class QlibPPONode(QlibModelNode):
     """PPO模型节点"""
+
+    __identifier__ = 'qlib.model.ppo'
     NODE_NAME = "Qlib PPO Model"
     NODE_CATEGORY = "Qlib/Model"
     

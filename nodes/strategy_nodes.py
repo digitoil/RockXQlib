@@ -42,6 +42,8 @@ logger = logging.getLogger(__name__)
 
 class QlibSignalNode(QlibBaseNode):
     """信号生成节点"""
+
+    __identifier__ = 'qlib.strategy.signal'
     NODE_NAME = "Qlib Signal Node"
     NODE_CATEGORY = "Qlib/Strategy"
     
@@ -138,6 +140,8 @@ class QlibSignalNode(QlibBaseNode):
 
 class QlibTopKNode(QlibBaseNode):
     """TopK策略节点"""
+
+    __identifier__ = 'qlib.strategy.topk'
     NODE_NAME = "Qlib TopK Strategy"
     NODE_CATEGORY = "Qlib/Strategy"
     
@@ -202,6 +206,8 @@ class QlibTopKNode(QlibBaseNode):
 
 class QlibLongShortNode(QlibBaseNode):
     """多空策略节点"""
+
+    __identifier__ = 'qlib.strategy.longshort'
     NODE_NAME = "Qlib Long-Short Strategy"
     NODE_CATEGORY = "Qlib/Strategy"
     
@@ -269,6 +275,8 @@ class QlibLongShortNode(QlibBaseNode):
 
 class QlibPortfolioNode(QlibBaseNode):
     """投资组合策略节点"""
+
+    __identifier__ = 'qlib.strategy.portfolio'
     NODE_NAME = "Qlib Portfolio Strategy"
     NODE_CATEGORY = "Qlib/Strategy"
     
@@ -336,6 +344,8 @@ class QlibPortfolioNode(QlibBaseNode):
 
 class QlibRiskNode(QlibBaseNode):
     """风险管理节点"""
+
+    __identifier__ = 'qlib.strategy.risk'
     NODE_NAME = "Qlib Risk Management"
     NODE_CATEGORY = "Qlib/Strategy"
     
@@ -439,6 +449,8 @@ class QlibRiskNode(QlibBaseNode):
 
 class QlibRebalanceNode(QlibBaseNode):
     """调仓节点"""
+
+    __identifier__ = 'qlib.strategy.rebalance'
     NODE_NAME = "Qlib Rebalance Strategy"
     NODE_CATEGORY = "Qlib/Strategy"
     

@@ -39,12 +39,52 @@ import yaml
 #    于是 core.workflow_runner / core.database_manager 等统统 "No module named"，
 #    而且报错信息完全指不到真正的原因。
 #    所以必须保证 RockXQlib 在最前 —— 用**倒序**插入，让 _HERE 最终位于 sys.path[0]。
+#
+# ⚠️ 绝对不要把 `<项目>/qlib` 加进 sys.path！
+#    `RockXQlib/qlib` **本身就是 qlib 包**（含 __init__.py / data / model / ...），
+#    并没有嵌套的 qlib/qlib。把它加进路径只会带来两个害处：
+#      1. 让 `import qlib` 仍然可用（其实 _HERE 已经在路径上，本来就够用），
+#         纯属多余；
+#      2. 把 qlib 的**内部子包全部暴露成顶层模块** ——
+#         backtest / cli / config / constant / contrib / data / log / model /
+#         rl / strategy / tests / typehint / utils / workflow
+#         共 14 个名字。任何 `import model` / `import data` / `import utils`
+#         都会静默命中 qlib 的内部实现。
+#    实测后果：`from model import Kronos`（Kronos 节点）命中的是
+#    qlib/model/__init__.py，报
+#        ImportError: attempted relative import beyond top-level package
+#    —— 报错完全指不到真正原因。去掉这个路径后 Kronos 恢复正常的
+#    "模块不存在 → 优雅降级" 行为。
 # ----------------------------------------------------------------
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _PARENT = os.path.dirname(_HERE)
-for _p in (os.path.join(_PARENT, "RockXFWV21"), os.path.join(_HERE, "qlib"), _HERE):
+for _p in (os.path.join(_PARENT, "RockXFWV21"), _HERE):
     if os.path.isdir(_p) and _p not in sys.path:
         sys.path.insert(0, _p)
+
+# 自检：确认 qlib 的内部子包没有被暴露成顶层模块
+def _verify_no_qlib_internals_leaked():
+    """确保 <项目>/qlib 不在 sys.path 上。
+
+    只要它在，qlib 的内部子包（model / data / utils / workflow / ...）
+    就会变成顶层可导入模块，静默遮蔽同名模块。
+    """
+    leaked = os.path.join(_HERE, "qlib")
+    norm = os.path.normcase(os.path.abspath(leaked))
+    bad = [p for p in sys.path
+           if os.path.normcase(os.path.abspath(p or ".")) == norm]
+    if bad:
+        for p in bad:
+            sys.path.remove(p)
+        print("=" * 70)
+        print("⚠️ 检测到 <项目>/qlib 被加进了 sys.path，已自动移除。")
+        print("    它会让 qlib 的内部子包（model/data/utils/workflow/...）")
+        print("    暴露成顶层模块，静默遮蔽同名模块（例如 Kronos 节点的")
+        print("    `from model import ...` 会命中 qlib/model）。")
+        print("=" * 70)
+
+
+_verify_no_qlib_internals_leaked()
 
 # 自检：确认 core 解析到的是本项目，而不是 RockXFWV21 的同名包
 def _verify_core_package():

@@ -42,6 +42,7 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 import time
 import traceback
@@ -52,6 +53,8 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "topological_sort_nodes",
     "NodeGraphWorkflowRunner",
+    "collect_inputs_from_ports",
+    "publish_outputs_to_ports",
     "DEFAULT_NODE_TIMEOUT",
     "DEFAULT_TOTAL_TIMEOUT",
 ]
@@ -104,6 +107,125 @@ def _is_output_port(port: Any) -> bool:
     except Exception:
         return False
     return t in ("out", "output")
+
+
+# --------------------------------------------------------------------------
+# 两套节点契约的桥接
+#
+# 项目里同时存在两种节点基类，执行契约不同：
+#
+#   新契约（nodes/qlib_core_nodes.py::QlibCoreBaseNode）
+#       ok = node.execute()                 无参，返回 bool
+#       数据走**真实端口**：
+#           node.get_input('port') 读上游 output_port.data
+#           node.set_output('port', v) 写自己的 output_port.data
+#
+#   旧契约（core/qlib_base_node.py::QlibBaseNode）
+#       result = node.execute(inputs)       传字典，返回 dict（{} 表示失败）
+#       数据走**内部字典**：
+#           node.get_input('port') 读 self._input_values
+#           node.set_output('port', v) 写 self._output_values
+#
+# 一键运行必须同时支持两者，否则启用 existing_nodes 之后
+# （model_nodes / strategy_nodes / backtest_nodes 都基于旧契约）
+# 会直接 TypeError: execute() takes 2 positional arguments but 1 was given。
+#
+# 桥接方式：对旧契约节点，从真实端口收集 inputs 传进去，
+# 执行完再把返回的 dict 写回真实端口 —— 这样新旧节点可以混在一条链路里。
+# --------------------------------------------------------------------------
+
+def _port_data(port: Any, default: Any = None) -> Any:
+    """从端口取数据（兼容 data / value 两种属性名）。"""
+    for attr in ("data", "value"):
+        if hasattr(port, attr):
+            val = getattr(port, attr)
+            if val is not None:
+                return val
+    return default
+
+
+def collect_inputs_from_ports(node: Any) -> Dict[str, Any]:
+    """从节点的**真实输入端口**收集上游数据，组成 ``{端口名: 数据}``。
+
+    供旧契约 ``execute(inputs)`` 使用，让走内部字典的节点也能拿到
+    通过连线传来的数据。
+    """
+    inputs: Dict[str, Any] = {}
+    try:
+        ports = node.inputs() or {}
+    except Exception:
+        return inputs
+
+    for name, in_port in ports.items():
+        try:
+            conns = in_port.connected_ports() or []
+        except Exception:
+            continue
+        if not conns:
+            continue
+        # connected_ports() 从输入端口出发返回的是**上游的输出端口**
+        inputs[name] = _port_data(conns[0])
+    return inputs
+
+
+def publish_outputs_to_ports(node: Any, values: Any) -> None:
+    """把执行结果写回节点的**真实输出端口**，供下游读取。
+
+    旧契约的 ``set_output()`` 只写 ``self._output_values``，
+    真实端口上什么都没有 —— 于是下游若用新契约（读端口）就拿不到数据。
+    这里把结果补写到端口上，打通两种契约。
+    """
+    if not isinstance(values, dict) or not values:
+        return
+    try:
+        ports = node.outputs() or {}
+    except Exception:
+        return
+    if not ports:
+        return
+
+    wrote = False
+    for name, out_port in ports.items():
+        if name in values and values[name] is not None:
+            try:
+                setattr(out_port, "data", values[name])
+                wrote = True
+            except Exception:
+                pass
+
+    # 兜底：只有一个输出端口、且返回值里没有同名键时，
+    # 老节点常返回 {'data': ...} / {'output': ...} 这类通用键
+    if not wrote and len(ports) == 1:
+        only_port = next(iter(ports.values()))
+        for key in ("data", "output", "result"):
+            if key in values and values[key] is not None:
+                try:
+                    setattr(only_port, "data", values[key])
+                except Exception:
+                    pass
+                break
+
+
+def _execute_needs_args(node: Any) -> bool:
+    """判断 ``node.execute`` 是否需要传参（即是否为旧契约）。
+
+    通过检查签名里有没有**必填**的位置参数来判断。
+    拿不到签名时保守认为不需要（新契约更常见）。
+    """
+    fn = getattr(node, "execute", None)
+    if not callable(fn):
+        return False
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return False
+    for p in sig.parameters.values():
+        if p.kind in (inspect.Parameter.POSITIONAL_ONLY,
+                      inspect.Parameter.POSITIONAL_OR_KEYWORD):
+            if p.default is inspect.Parameter.empty:
+                return True
+    return False
+
 
 
 def topological_sort_nodes(nodes: Sequence[Any]) -> Tuple[List[Any], List[str]]:
@@ -289,6 +411,34 @@ class NodeGraphWorkflowRunner:
         if res.get("backtest_result") is not None:
             self.backtest_result = res["backtest_result"]
 
+    def _execute_node(self, node: Any) -> Any:
+        """执行单个节点，自动适配新旧两种契约。
+
+        - 新契约 ``execute()``：无参，数据走真实端口，返回 bool
+        - 旧契约 ``execute(inputs)``：传字典，返回 dict（``{}`` 表示失败）
+
+        旧契约执行完会把返回的 dict 补写到真实端口上，
+        这样新旧节点可以混在同一条链路里。
+        """
+        fn = getattr(node, "execute")
+        if not _execute_needs_args(node):
+            return fn()
+
+        # 旧契约：从真实端口收集上游数据传进去
+        inputs = collect_inputs_from_ports(node)
+        result = fn(inputs)
+
+        # 把结果写回真实端口，供下游（可能是新契约）读取
+        publish_outputs_to_ports(node, result)
+        # 老节点的 set_output 只写了 _output_values，也一并合并
+        try:
+            extra = node.get_all_outputs() if hasattr(node, "get_all_outputs") else None
+            if isinstance(extra, dict):
+                publish_outputs_to_ports(node, extra)
+        except Exception:
+            pass
+        return result
+
     # ---- 主流程 ----
 
     def run(self) -> Dict[str, Any]:
@@ -341,7 +491,8 @@ class NodeGraphWorkflowRunner:
 
             try:
                 # 注意：真实节点契约是 execute() 无参，数据走端口
-                ok = bool(node.execute())
+                # 自动适配新旧契约（旧契约返回 dict，{} 为失败 → bool({}) 为 False）
+                ok = bool(self._execute_node(node))
                 elapsed = time.time() - t0
                 res = self._read_result(node)
                 status = (res or {}).get("status")
