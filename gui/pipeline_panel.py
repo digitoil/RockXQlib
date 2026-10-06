@@ -20,6 +20,36 @@ from PySide6.QtWidgets import (
 PIPELINES_DIR = Path(__file__).resolve().parent.parent / "pipelines"
 
 
+def _guarded(fn):
+    """菜单入口兜底：任何异常都记进日志并弹窗，绝不让异常冒到 Qt 事件循环里。
+
+    PySide 槽函数里未捕获的异常，在不同平台/版本上表现不一（有的只打印，
+    有的直接中止进程）。入口统一接住，用户看到的是可读的错误，日志里有完整堆栈。
+    """
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        try:
+            return fn(self, *args, **kwargs)
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            try:
+                self.log_message("%s 失败: %s\n%s" % (fn.__name__, e, tb), "ERROR")
+            except Exception:
+                print(tb)
+            extra = ""
+            if isinstance(e, ImportError):
+                import sys
+                mod = sys.modules.get("pipeline")
+                extra = "\n\n导入失败。当前 pipeline 包位置: %s\n（若不在项目目录内，说明被同名目录遮蔽）" % (
+                    getattr(mod, "__file__", None) or getattr(mod, "__path__", "未加载"))
+            QMessageBox.critical(self, "操作失败", "%s: %s%s\n\n完整堆栈已写入日志面板。"
+                                 % (type(e).__name__, e, extra))
+    return wrapper
+
+
 class PipelineGuiMixin:
     """混入 RockXQlibMainWindow。依赖：self.graph / self.log_message / self.status_label。"""
 
@@ -53,6 +83,7 @@ class PipelineGuiMixin:
         return True
 
     # ---------- 模板库 ----------
+    @_guarded
     def pipeline_new_from_template(self):
         from pipeline.definition import load_pipeline_file
         files = sorted(list(PIPELINES_DIR.glob("*.yaml")) + list(PIPELINES_DIR.glob("*.json")))
@@ -89,6 +120,7 @@ class PipelineGuiMixin:
             return
         self._load_pipeline_doc_to_canvas(doc, ov, title="模板")
 
+    @_guarded
     def pipeline_save_as_template(self):
         """把当前画布存成 pipelines/<name>.json，之后可从模板新建。"""
         from PySide6.QtWidgets import QInputDialog
@@ -108,6 +140,7 @@ class PipelineGuiMixin:
         self.log_message("已保存模板: %s" % dest, "SUCCESS")
 
     # ---------- AI 建模助手（交互式）----------
+    @_guarded
     def pipeline_ai_generate(self):
         """显示 / 隐藏右侧「AI 建模助手」面板（首次调用时创建）。"""
         from gui.assistant_dock import AssistantDock
@@ -121,6 +154,7 @@ class PipelineGuiMixin:
         self._assistant_dock_seen = True
 
     # ---------- 运行记录 ----------
+    @_guarded
     def pipeline_record_gui_run(self, summary):
         """GUI 一键运行结束后调用：把画布与结果存成可复现的运行记录。"""
         try:
@@ -139,6 +173,7 @@ class PipelineGuiMixin:
             except Exception as e:
                 self.log_message("助手面板更新失败: %s" % e, "WARNING")
 
+    @_guarded
     def pipeline_show_runs(self):
         from pipeline.runs import _flat_metrics, list_runs
         runs = list_runs()
@@ -157,7 +192,7 @@ class PipelineGuiMixin:
         tbl.setEditTriggers(QTableWidget.NoEditTriggers)
         for i, r in enumerate(reversed(runs)):
             m = _flat_metrics(r)
-            vals = [r["run_id"], r.get("status", "?"), "%.1f" % r.get("elapsed", 0)] + \
+            vals = [r["run_id"], str(r.get("status", "?")), "%.1f" % (r.get("elapsed") or 0)] + \
                    [("%.4f" % m[k]) if k in m else "-" for k in keys]
             for j, v in enumerate(vals):
                 tbl.setItem(i, j, QTableWidgetItem(v))
@@ -210,20 +245,21 @@ class PipelineGuiMixin:
         dlg.exec()
 
     # ---------- 参数扫描（在画布上批量试参）----------
+    @_guarded
     def pipeline_sweep(self):
         """对当前画布做参数网格：逐组合改节点属性 -> 真实运行 -> 存档，结束后还原属性。
 
         属性读写都在主线程；只有「执行」在 QThread 里，与一键运行一致。
         """
-        from core.workflow_schema import serialize_graph
-        from pipeline.sweep import expand, parse_grid
-        nodes = self.graph.all_nodes()
+        nodes = list(self.graph.all_nodes() or [])
         if not nodes:
-            QMessageBox.information(self, "提示", "画布中没有节点")
+            QMessageBox.information(self, "提示", "画布中没有节点，请先搭建或载入一个工作流再做参数扫描")
             return
         if getattr(self, "workflow_thread", None) is not None and self.workflow_thread.isRunning():
             QMessageBox.information(self, "提示", "已有工作流在运行")
             return
+        from core.workflow_schema import serialize_graph
+        from pipeline.sweep import expand, parse_grid
         wf = serialize_graph(self.graph, name="sweep")
         ref = "\n".join("%s  %s" % (n["id"], n["name"]) for n in wf["nodes"])
 

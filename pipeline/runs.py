@@ -18,8 +18,11 @@ def list_runs(runs_dir: Optional[Path] = None) -> List[Dict[str, Any]]:
             if m.is_file():
                 try:
                     rec = json.loads(m.read_text(encoding="utf-8"))
-                except ValueError:
+                except (ValueError, OSError):
                     continue
+                if not isinstance(rec, dict):
+                    continue
+                rec.setdefault("run_id", d.name)   # 损坏/手写的记录也要能列出来
                 rec["run_dir"] = str(d)
                 out.append(rec)
     return out
@@ -53,7 +56,7 @@ def table(runs: List[Dict[str, Any]]) -> str:
     rows = [header]
     for r in runs:
         m = _flat_metrics(r)
-        rows.append([r["run_id"], r.get("status", "?"), "%.1f" % r.get("elapsed", 0)]
+        rows.append([r["run_id"], r.get("status", "?"), "%.1f" % (r.get("elapsed") or 0)]
                     + [("%.4f" % m[k]) if k in m else "-" for k in keys])
     w = [max(len(str(row[i])) for row in rows) for i in range(len(header))]
     return "\n".join("  ".join(str(c).ljust(w[i]) for i, c in enumerate(row)) for row in rows)
