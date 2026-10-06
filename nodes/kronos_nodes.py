@@ -21,54 +21,53 @@ kronos_path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'PanShiB
 if os.path.exists(kronos_path):
     sys.path.insert(0, kronos_path)
 
+# NodeGraphQt 是硬依赖，必须显式失败；qlib_core 与 Kronos 模型各自独立降级。
+# 原实现把三者放在同一个 try 里，任一导入失败就把 BaseNode 换成空壳占位类，
+# 导致节点失去 add_input/add_output 等全部端口 API。
+from NodeGraphQt import BaseNode
+NODEGRAPH_AVAILABLE = True
+
 try:
     from core.qlib_core_integration import qlib_core
-    from NodeGraphQt import BaseNode
-    NODEGRAPH_AVAILABLE = True
-    
-    # 尝试导入Kronos模型
-    try:
-        from model import Kronos, KronosTokenizer, KronosPredictor
-        KRONOS_AVAILABLE = True
-    except ImportError as e:
-        print(f"Kronos模型导入失败: {e}")
-        KRONOS_AVAILABLE = False
-        # 创建占位符
-        class Kronos:
-            @staticmethod
-            def from_pretrained(model_name):
-                return None
-        class KronosTokenizer:
-            @staticmethod
-            def from_pretrained(tokenizer_name):
-                return None
-        class KronosPredictor:
-            def __init__(self, model, tokenizer, device="cpu", max_context=512):
-                self.model = model
-                self.tokenizer = tokenizer
-                self.device = device
-                self.max_context = max_context
-            
-            def predict(self, df, x_timestamp, y_timestamp, pred_len, T=1.0, top_p=0.9, sample_count=1, verbose=True):
-                # 模拟预测结果
-                return pd.DataFrame({
-                    'open': np.random.randn(pred_len) * 0.01 + 100,
-                    'high': np.random.randn(pred_len) * 0.01 + 100,
-                    'low': np.random.randn(pred_len) * 0.01 + 100,
-                    'close': np.random.randn(pred_len) * 0.01 + 100,
-                    'volume': np.random.randint(1000000, 5000000, pred_len),
-                    'amount': np.random.randint(10000000, 50000000, pred_len)
-                })
-        
-except ImportError as e:
-    print(f"导入失败: {e}")
-    # 创建占位符
-    class BaseNode:
-        def __init__(self):
-            pass
+except ImportError as _e:
+    print(f"qlib_core 不可用: {_e}")
     qlib_core = None
+
+# 尝试导入Kronos模型（缺失时用占位实现，保证节点仍可创建）
+try:
+    from model import Kronos, KronosTokenizer, KronosPredictor
+    KRONOS_AVAILABLE = True
+except ImportError as e:
+    print(f"Kronos模型导入失败: {e}")
     KRONOS_AVAILABLE = False
-    NODEGRAPH_AVAILABLE = False
+
+    class Kronos:
+        @staticmethod
+        def from_pretrained(model_name):
+            return None
+
+    class KronosTokenizer:
+        @staticmethod
+        def from_pretrained(tokenizer_name):
+            return None
+
+    class KronosPredictor:
+        def __init__(self, model, tokenizer, device="cpu", max_context=512):
+            self.model = model
+            self.tokenizer = tokenizer
+            self.device = device
+            self.max_context = max_context
+
+        def predict(self, df, x_timestamp, y_timestamp, pred_len, T=1.0, top_p=0.9, sample_count=1, verbose=True):
+            # 模拟预测结果
+            return pd.DataFrame({
+                'open': np.random.randn(pred_len) * 0.01 + 100,
+                'high': np.random.randn(pred_len) * 0.01 + 100,
+                'low': np.random.randn(pred_len) * 0.01 + 100,
+                'close': np.random.randn(pred_len) * 0.01 + 100,
+                'volume': np.random.randint(1000000, 5000000, pred_len),
+                'amount': np.random.randint(10000000, 50000000, pred_len)
+            })
 
 logger = logging.getLogger(__name__)
 

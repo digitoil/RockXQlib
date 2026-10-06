@@ -21,6 +21,25 @@ import logging
 import json
 import time
 import yaml
+
+# ----------------------------------------------------------------
+# sys.path 引导（必须在任何 core./gui./nodes. 导入之前执行）
+#
+# 本文件用的是包式导入（from core.xxx / from gui.xxx / from nodes.xxx），
+# 因此**项目根目录**必须在 sys.path 上。直接双击运行时 sys.path[0] 是
+# 脚本所在目录，通常没问题；但通过某些启动器 / 模块方式运行时，
+# 根目录可能不在路径里，就会出现：
+#     core.database_manager 导入失败 -> gui.database_management_widgets
+#     里 DatabaseConnection 未定义 -> class 定义处抛 NameError
+#     （注意 NameError 不会被 except ImportError 捕获，整个 GUI 起不来）
+# 这里显式把项目根、qlib、NodeGraphQt 所在目录都补进去。
+# ----------------------------------------------------------------
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_PARENT = os.path.dirname(_HERE)
+for _p in (_HERE, os.path.join(_HERE, "qlib"), os.path.join(_PARENT, "RockXFWV21")):
+    if os.path.isdir(_p) and _p not in sys.path:
+        sys.path.insert(0, _p)
+
 from PySide6.QtWidgets import *
 from PySide6.QtCore import *
 from PySide6.QtGui import *
@@ -102,11 +121,19 @@ logger = logging.getLogger(__name__)
 # 导入NodeGraphQt
 try:
     from NodeGraphQt import NodeGraph, BaseNode, NodesTreeWidget, PropertiesBinWidget
+    # 重复注册节点时抛这个异常，注册基础节点处要单独捕获
+    try:
+        from NodeGraphQt.errors import NodeRegistrationError
+    except ImportError:
+        from NodeGraphQt.base.factory import NodeRegistrationError  # 兼容旧路径
     NODEGRAPH_AVAILABLE = True
     print("✅ NodeGraphQt 导入成功")
-except ImportError:
+except ImportError as _e:
     NODEGRAPH_AVAILABLE = False
-    print("❌ NodeGraphQt 导入失败")
+    # 定义一个兜底异常类，保证后面 except 子句不会因未定义而 NameError
+    class NodeRegistrationError(Exception):
+        pass
+    print(f"❌ NodeGraphQt 导入失败: {_e}")
 
 # 移除CustomNodesTreeWidget类，直接使用原生NodesTreeWidget
 
@@ -505,7 +532,12 @@ class RockXQlibMainWindow(QMainWindow):
             if not hasattr(self.graph, 'factory') or self.graph.factory is None:
                 print("🔧 初始化NodeGraphQt factory...")
                 try:
-                    from NodeGraphQt import NodeFactory
+                    # NodeGraphQt 顶层 **没有** 导出 NodeFactory（新版把它
+                    # 移到了 base.factory）。先试正确路径，再退回顶层导入名。
+                    try:
+                        from NodeGraphQt.base.factory import NodeFactory
+                    except ImportError:
+                        from NodeGraphQt import NodeFactory  # 兼容旧版
                     self.graph.factory = NodeFactory()
                     print("✅ Factory初始化成功")
                 except Exception as e:
@@ -692,13 +724,19 @@ class RockXQlibMainWindow(QMainWindow):
 
             # 设置网格背景
             try:
-                # 尝试设置网格模式
+                # NodeGraphQt 的真实签名：
+                #   set_grid_mode(mode)       mode 是 ViewerEnum 的字符串值
+                #   set_grid_color(r, g, b)   **三个独立参数**，不是 list
+                # 原实现传 [0.9,0.9,0.9,1.0] 会报
+                #   NodeGraph.set_grid_color() missing 2 required positional arguments
                 if hasattr(self.graph, 'set_grid_mode'):
-                    self.graph.set_grid_mode(True)
+                    try:
+                        from NodeGraphQt.constants import ViewerEnum
+                        self.graph.set_grid_mode(ViewerEnum.GRID_DISPLAY_DOTS.value)
+                    except Exception:
+                        self.graph.set_grid_mode(True)
                 if hasattr(self.graph, 'set_grid_color'):
-                    self.graph.set_grid_color([0.9, 0.9, 0.9, 1.0])  # 浅灰色网格
-                if hasattr(self.graph, 'set_grid_size'):
-                    self.graph.set_grid_size(20)  # 网格大小
+                    self.graph.set_grid_color(0.9, 0.9, 0.9)  # 浅灰色网格
             except Exception as e:
                 print(f"设置网格失败: {e}")
 
@@ -1129,7 +1167,10 @@ class RockXQlibMainWindow(QMainWindow):
             print("❌ Graph没有factory属性，尝试创建factory")
             # 尝试创建factory
             try:
-                from NodeGraphQt import NodeFactory
+                try:
+                    from NodeGraphQt.base.factory import NodeFactory
+                except ImportError:
+                    from NodeGraphQt import NodeFactory  # 兼容旧版
                 self.graph.factory = NodeFactory()
                 print("✅ 创建了新的factory")
             except Exception as e:
@@ -1193,46 +1234,129 @@ class RockXQlibMainWindow(QMainWindow):
         ]
 
         for name, identifier in basic_nodes:
-            node_class = type(f"{name}Class", (BasicNode,), {
+            # 关键：NodeGraphQt 的 type_ 是
+            #     cls.__identifier__ + '.' + cls.__name__
+            # 两者都在**类层面**求值（注册时立即读取）。
+            # 原实现只在 __init__ 里设 __identifier__（实例级），
+            # 于是四个类的 __identifier__ 全部继承自 BaseNode，
+            # 只有 cls.__name__ 不同 —— 而这里 f"{name}Class" 生成的
+            # 类名在不同循环里可能重名（如两次都叫 数据节点Class），
+            # 第二次注册就抛 NodeRegistrationError：
+            #   node type "nodeGraphQt.nodes.数据节点Class" already registered
+            # 修法：把 __identifier__ 作为**类属性**写进 type() 的 dict，
+            # 并保证类名唯一（用 identifier 派生）。
+            safe_cls_name = "Basic_" + identifier.replace(".", "_") + "Class"
+            node_class = type(safe_cls_name, (BasicNode,), {
+                '__identifier__': identifier,   # 类级，供 type_ 使用
+                'NODE_NAME': name,              # 类级，供 factory 的 name 索引使用
                 '__init__': lambda self, n=name, i=identifier: BasicNode.__init__(self, n, i)
             })
-            self.graph.register_node(node_class)
-            print(f"✅ 注册基础节点: {name}")
+            try:
+                self.graph.register_node(node_class)
+                print(f"✅ 注册基础节点: {name} ({identifier})")
+            except NodeRegistrationError as e:
+                # 重复注册不算致命，跳过即可，不要中断整个初始化
+                print(f"⚠️ 跳过已注册的基础节点: {name} -> {e}")
 
     def connect_signals(self):
-        """连接信号"""
-        if NODEGRAPH_AVAILABLE and self.graph:
-            # 连接节点变化信号
+        """连接信号。
+
+        NodeGraphQt 实际暴露的信号（已用 dir() 枚举确认）是：
+            node_created(node) / nodes_deleted(list) /
+            port_connected(Port, Port) / port_disconnected(Port, Port) /
+            property_changed(Node, str, object) / session_changed(str) /
+            node_selected(list) / node_selection_changed(list)
+
+        原实现连的是 node_deleted / connection_created / connection_deleted
+        —— 这三个信号在 NodeGraphQt 里**不存在**，所以每次都会抛
+        AttributeError 掉进 except 分支，状态栏只能靠 1 秒定时器刷新。
+        这里改为逐个 try 连接真实信号名，任何一个不可用都不影响其余信号。
+        """
+        if not (NODEGRAPH_AVAILABLE and self.graph):
+            return
+
+        # (信号名, 处理函数)  按可用性逐个挂载
+        wanted = [
+            ('node_created', self.on_node_created),
+            ('nodes_deleted', self.on_nodes_deleted),
+            ('port_connected', self.on_port_connected),
+            ('port_disconnected', self.on_port_disconnected),
+            ('property_changed', self.on_property_changed),
+        ]
+        connected = []
+        for sig_name, slot in wanted:
             try:
-                self.graph.node_created.connect(self.on_node_created)
-                self.graph.node_deleted.connect(self.on_node_deleted)
-                self.graph.connection_created.connect(self.on_connection_created)
-                self.graph.connection_deleted.connect(self.on_connection_deleted)
-            except AttributeError:
-                # 如果信号不可用，使用定时器更新
-                self.update_timer = QTimer()
-                self.update_timer.timeout.connect(self.update_status)
-                self.update_timer.start(1000)
+                sig = getattr(self.graph, sig_name, None)
+                if sig is None:
+                    continue
+                sig.connect(slot)
+                connected.append(sig_name)
+            except Exception as e:
+                print(f"[信号] {sig_name} 连接失败（不影响使用）: {e}")
+
+        # 兜底：始终挂一个定时器刷新，保证状态栏节点/连线计数不会漏更新
+        self.update_timer = QTimer()
+        self.update_timer.timeout.connect(self.update_status)
+        self.update_timer.start(1000)
+        self.update_status()
+
+        print(f"[信号] 已连接: {connected if connected else '（无）'}；"
+              f"状态栏定时刷新已启用")
 
     def on_node_created(self, node):
         """节点创建事件"""
         self.update_status()
-        self.status_label.setText(f"创建节点: {node.name()}")
+        try:
+            self.status_label.setText(f"创建节点: {node.name()}")
+        except Exception:
+            pass
 
-    def on_node_deleted(self, node):
-        """节点删除事件"""
+    def on_nodes_deleted(self, nodes):
+        """节点删除事件（NodeGraphQt 传的是 list）"""
         self.update_status()
-        self.status_label.setText(f"删除节点: {node.name()}")
+        try:
+            n = len(nodes) if hasattr(nodes, '__len__') else 1
+            self.status_label.setText(f"删除节点: {n} 个")
+        except Exception:
+            pass
+
+    def on_port_connected(self, port_a, port_b):
+        """端口连接事件"""
+        self.update_status()
+        try:
+            self.status_label.setText(
+                f"连接: {port_a.node().name()}.{port_a.name()} -> "
+                f"{port_b.node().name()}.{port_b.name()}")
+        except Exception:
+            self.status_label.setText("创建连接")
+
+    def on_port_disconnected(self, port_a, port_b):
+        """端口断开事件"""
+        self.update_status()
+        try:
+            self.status_label.setText(
+                f"断开: {port_a.node().name()}.{port_a.name()} -/- "
+                f"{port_b.node().name()}.{port_b.name()}")
+        except Exception:
+            self.status_label.setText("断开连接")
+
+    def on_property_changed(self, node, prop_name, prop_value):
+        """节点属性变更事件"""
+        try:
+            self.status_label.setText(
+                f"修改属性: {node.name()}.{prop_name} = {prop_value}")
+        except Exception:
+            pass
+
+    # 兼容旧入口名（避免其他地方仍引用）
+    def on_node_deleted(self, node):
+        self.update_status()
 
     def on_connection_created(self, connection):
-        """连接创建事件"""
         self.update_status()
-        self.status_label.setText("创建连接")
 
     def on_connection_deleted(self, connection):
-        """连接删除事件"""
         self.update_status()
-        self.status_label.setText("删除连接")
 
     def update_status(self):
         """更新状态"""
@@ -1257,7 +1381,7 @@ class RockXQlibMainWindow(QMainWindow):
     def new_workflow(self):
         """新建工作流"""
         if NODEGRAPH_AVAILABLE and self.graph:
-            self.graph.clear_all()
+            self.graph.clear_session()
             self.status_label.setText("新建工作流")
 
     def open_workflow(self):

@@ -16,29 +16,32 @@ from typing import Dict, Any, Optional, List, Union
 # 添加路径
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+# NodeGraphQt 是硬依赖，必须显式失败；核心集成组件各自独立降级。
+# 原实现共用一个 try，任一导入失败就把 BaseNode 换成空壳占位类，
+# 导致节点失去 add_input/add_output 等全部端口 API。
+from NodeGraphQt import BaseNode
+NODEGRAPH_AVAILABLE = True
+
 try:
     from core.qlib_core_integration import qlib_core
+except ImportError as e:
+    print(f"qlib_core 不可用: {e}")
+    qlib_core = None
+
+try:
     from core.data_flow import RockXQlibDataFlowManager, RockXQlibDataPacket
     from core.message_system import RockXQlibMessageBus
     from core.qlib_cache_manager import QlibCacheManager
     from core.qlib_experiment_manager import QlibExperimentManager
     from core.qlib_parallel_executor import QlibParallelExecutor
-    from NodeGraphQt import BaseNode
-    NODEGRAPH_AVAILABLE = True
 except ImportError as e:
-    print(f"导入失败: {e}")
-    # 创建占位符
-    class BaseNode:
-        def __init__(self):
-            pass
-    qlib_core = None
+    print(f"核心集成组件不可用，相关节点将降级: {e}")
     RockXQlibDataFlowManager = None
     RockXQlibDataPacket = None
     RockXQlibMessageBus = None
     QlibCacheManager = None
     QlibExperimentManager = None
     QlibParallelExecutor = None
-    NODEGRAPH_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 

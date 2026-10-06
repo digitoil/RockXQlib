@@ -11,6 +11,8 @@ import sys
 if sys.platform.startswith('win'):
     os.environ['PYTHONIOENCODING'] = 'utf-8'
 import logging
+import json
+import re
 import traceback
 from typing import Dict, Any, Optional, List, Union
 from abc import ABC, abstractmethod
@@ -18,6 +20,14 @@ from abc import ABC, abstractmethod
 # 设置环境变量
 os.environ['SETUPTOOLS_SCM_PRETEND_VERSION'] = '0.9.8.dev6'
 os.environ['SETUPTOOLS_SCM_PRETEND_VERSION_FOR_ROCKXQLIB'] = '0.9.8.dev6'
+
+# mlflow 2.9.x 内部还在用 pkg_resources，import 时会打一条弃用警告。
+# qlib 的 DataHandler 会 spawn 大量子进程，每个子进程都重复打这条，
+# 日志会被刷屏。这里统一压制（只压这一条，不影响其他告警）。
+import warnings as _warnings
+_warnings.filterwarnings('ignore', message='pkg_resources is deprecated as an API')
+_warnings.filterwarnings('ignore', category=UserWarning, module='mlflow')
+_warnings.filterwarnings('ignore', category=UserWarning, module='pkg_resources')
 
 
 logger = logging.getLogger(__name__)
@@ -28,16 +38,27 @@ class QlibCoreIntegration:
     def __init__(self):
         self.qlib_available = False
         self.qlib_initialized = False
+        # 最近一次模型节点产出的预测（Series，MultiIndex=datetime×instrument）。
+        # 策略节点的 signal='<PRED>' 会从这里取，避免再伪造假信号。
+        self._last_prediction = None
+        # 各模型类的可用性（由 _check_qlib_availability 填充）
+        self.available_models = {}
         self._check_qlib_availability()
 
     def _check_qlib_availability(self):
-        """检查Qlib可用性"""
+        """检查Qlib可用性。
+
+        注意：这里只校验「核心链路必需」的组件。此前把 ``LSTM`` 也放进
+        必检列表，但 ``qlib.contrib.model.__init__`` 里 LSTM/Transformer 等
+        PyTorch 模型是包在同一个 try 里的，只要缺 pytorch 就整体导入失败，
+        进而把整个 ``qlib_available`` 误判为 False —— 实际上 LGBModel 等
+        非神经网络模型完全可用。改为分级校验。
+        """
         try:
             import qlib
             from qlib.data import D
             from qlib.data.dataset import DatasetH
             from qlib.contrib.data.handler import Alpha158, Alpha360
-            from qlib.contrib.model import LinearModel, LGBModel, LSTM
             from qlib.contrib.strategy import TopkDropoutStrategy
             from qlib.backtest import backtest
             from qlib.utils import init_instance_by_config
@@ -48,6 +69,49 @@ class QlibCoreIntegration:
         except ImportError as e:
             self.qlib_available = False
             logger.warning(f"❌ Qlib核心组件导入失败: {e}")
+            return
+
+        # 模型是可选的：逐个探测，缺哪个记哪个，不影响核心可用性
+        self.available_models = {}
+        for cls_name, mod in (
+            ('LinearModel', 'qlib.contrib.model.linear'),
+            ('LGBModel', 'qlib.contrib.model.gbdt'),
+            ('XGBModel', 'qlib.contrib.model.xgboost'),
+            ('CatBoostModel', 'qlib.contrib.model.catboost_model'),
+        ):
+            try:
+                __import__(mod, fromlist=[cls_name])
+                self.available_models[cls_name] = True
+            except Exception:
+                self.available_models[cls_name] = False
+        # 神经网络模型（依赖 pytorch），单独标记
+        try:
+            from qlib.contrib.model.pytorch_lstm import LSTM  # noqa: F401
+            self.available_models['LSTM'] = True
+        except Exception:
+            self.available_models['LSTM'] = False
+        avail = [k for k, v in self.available_models.items() if v]
+        logger.info(f"可用模型: {avail if avail else '（仅基础模型）'}")
+
+    @staticmethod
+    def _mlflow_client_available() -> bool:
+        """探测环境里是否有「完整版」mlflow（即 mlflow.tracking.MlflowClient 可用）。
+
+        容易踩的坑：``pip install mlflow`` 在部分源/版本下会装到
+        ``mlflow-tracing``（只有 tracing 子集）。此时
+        ``from mlflow.version import IS_TRACING_SDK_ONLY`` 为 True，
+        ``mlflow.tracking`` 模块虽然存在，但里面**没有** MlflowClient，
+        qlib 的 MLflowExpManager 一 new 就抛 AttributeError。
+        """
+        try:
+            import mlflow.tracking as _mt
+            if not hasattr(_mt, "MlflowClient"):
+                return False
+            # 再确认能真正实例化（有些环境 import 成功但内部依赖缺失）
+            from mlflow.client import MlflowClient  # noqa: F401
+            return True
+        except Exception:
+            return False
 
     def initialize_qlib(self, provider_uri: str = None, region: str = "cn",
                        enable_exp_recorder: bool = True) -> bool:
@@ -63,30 +127,50 @@ class QlibCoreIntegration:
             os.environ['SETUPTOOLS_SCM_PRETEND_VERSION'] = '0.9.8.dev6'
             os.environ['SETUPTOOLS_SCM_PRETEND_VERSION_FOR_ROCKXQLIB'] = '0.9.8.dev6'
 
-            # 检查Qlib是否已初始化（兼容不同版本）
-            is_initialized = False
+            # 检查 Qlib 是否已初始化，并核对数据路径是否与本次请求一致。
+            #
+            # 原实现用「能否 from qlib.data import D」来判断是否已初始化，
+            # 但该导入在 qlib 未初始化时同样会成功，于是被误判为“已初始化”，
+            # 真正的 qlib.init() 被跳过 —— 结果数据节点拿到的是 qlib 默认路径
+            # (~/.qlib/qlib_data/cn_data)，而不是节点属性里配的 provider_uri，
+            # 报 "Please run qlib.init() first"。
+            # 改为直接读取 qlib 当前生效的 provider_uri 做比对。
+            current_provider = ""
             try:
-                # 尝试使用qlib.is_initialized()方法
-                if hasattr(qlib, 'is_initialized'):
-                    is_initialized = qlib.is_initialized()
-                else:
-                    # 如果没有is_initialized方法，尝试导入D模块
-                    from qlib.data import D
-                    # 如果能导入D模块，说明Qlib已经初始化
-                    is_initialized = True
+                from qlib.config import C as _QlibC
+                _cur = getattr(_QlibC, "provider_uri", None)
+                if isinstance(_cur, dict):
+                    _cur = _cur.get("__DEFAULT_FREQ") or next(iter(_cur.values()), "")
+                current_provider = str(_cur or "")
             except Exception:
-                # 如果导入D模块失败，说明Qlib未初始化
-                is_initialized = False
+                current_provider = ""
 
-            if not is_initialized:
-                # 设置默认数据路径
-                if provider_uri is None:
-                    provider_uri = os.path.expanduser("~/.qlib/qlib_data/cn_data")
+            if provider_uri is None:
+                provider_uri = os.path.expanduser("~/.qlib/qlib_data/cn_data")
 
-                logger.info(f"🚀 正在初始化Qlib，数据路径: {provider_uri}")
+            def _norm(p):
+                return os.path.normcase(os.path.normpath(str(p)))
+
+            is_initialized = bool(current_provider)
+            need_init = (not is_initialized) or (_norm(provider_uri) != _norm(current_provider))
+
+            if need_init:
+                logger.info(f"🚀 正在初始化Qlib，数据路径: {provider_uri} "
+                            f"(当前: {current_provider or '未初始化'})")
 
                 # 初始化Qlib
-                qlib.init(
+                #
+                # 注意 ``enable_exp_recorder`` / ``kernel_api`` 等并不是 qlib 认识
+                # 的参数（qlib 只会打印 "Unrecognized config" 警告）。真正决定
+                # 实验记录器的是 ``exp_manager`` 这一段配置：qlib.init() 会执行
+                #   exp_manager = init_instance_by_config(self["exp_manager"])
+                # 默认是 MLflowExpManager，它会 new 一个 MlflowClient。
+                # 如果环境里装的是 mlflow-tracing（只有 tracing 子集，没有
+                # MlflowClient），模型 fit 到最后一步 R.log_metrics 就会崩，
+                # 表现为「模型训练成功了但拿不到预测」。
+                # 这里探测 mlflow 是否真正可用，不可用就把 exp_manager 换成
+                # 轻量的本地实现，让整条链路不依赖 mlflow 也能跑通。
+                qlib_init_kwargs = dict(
                     provider_uri=provider_uri,
                     region=region,
                     auto_mount=False,
@@ -96,8 +180,20 @@ class QlibCoreIntegration:
                     redis_port=None,
                     redis_task_db=None,
                     redis_freq_limit=None,
-                    enable_exp_recorder=enable_exp_recorder
                 )
+                if not self._mlflow_client_available():
+                    qlib_init_kwargs["exp_manager"] = {
+                        "class": "RockXNullExpManager",
+                        "module_path": "core.qlib_exp_shim",
+                        "kwargs": {},
+                    }
+                    logger.warning(
+                        "⚠️ 未检测到完整的 mlflow（缺少 MlflowClient），"
+                        "已切换到本地空实现实验管理器，训练/回测不受影响，"
+                        "但不落盘实验记录。安装完整版 mlflow 可恢复该功能："
+                        "pip install mlflow==2.9.2")
+
+                qlib.init(**qlib_init_kwargs)
 
                 # 验证初始化是否成功
                 try:
@@ -146,8 +242,30 @@ class QlibCoreIntegration:
             if fields is None:
                 fields = ["$close", "$volume", "$amount"]
 
+            # qlib 的 D.features 不接受 'csi300' 这样的裸市场名，
+            # 必须经 D.instruments(market=...) 转成 Instrument 配置；
+            # 传股票代码时则要包成列表。原实现直接透传字符串，
+            # 报 "Unsupported input type for param `instrument`"。
+            resolved = instruments
+            try:
+                if isinstance(instruments, str):
+                    s = instruments.strip()
+                    if s.startswith('[') or s.startswith('{'):
+                        resolved = json.loads(s)
+                    elif ',' in s:
+                        resolved = [x.strip() for x in s.split(',') if x.strip()]
+                    elif re.fullmatch(r'[A-Za-z]{2}\d{6}', s):
+                        resolved = [s]
+                    else:
+                        resolved = D.instruments(market=s)
+                elif isinstance(instruments, (list, tuple)):
+                    resolved = list(instruments)
+            except Exception as e:
+                logger.warning(f"instrument 参数解析失败，按原值透传: {e}")
+                resolved = instruments
+
             data = D.features(
-                instruments=instruments,
+                instruments=resolved,
                 fields=fields,
                 start_time=start_time,
                 end_time=end_time
@@ -198,6 +316,15 @@ class QlibCoreIntegration:
             # 确保handler_config包含module_path
             if 'module_path' not in handler_config:
                 handler_config['module_path'] = 'qlib.contrib.data.handler'
+
+            # 注意：不要给 handler 注入 num_workers。
+            # qlib 的 Alpha158 / Alpha360 的 __init__ 并没有这个参数，
+            # 注入会直接抛
+            #   DataHandler.__init__() got an unexpected keyword argument 'num_workers'
+            # 让数据集节点必然失败。控制并行度应通过 D.features(n_jobs=...) 或
+            # OMP_NUM_THREADS / OPENBLAS_NUM_THREADS 等环境变量，而不是 handler 参数。
+            kwargs = handler_config.setdefault('kwargs', {})
+            kwargs.pop('num_workers', None)
 
             # 创建数据处理器
             handler = init_instance_by_config(handler_config)
@@ -321,26 +448,15 @@ class QlibCoreIntegration:
                 if 'kwargs' not in strategy_config:
                     strategy_config['kwargs'] = {}
 
-                # 如果signal是<PRED>字符串，转换为智能信号对象
-                if signal == '<PRED>':
-                    try:
-                        from qlib.backtest.signal import create_signal_from
-                        import pandas as pd
-                        import numpy as np
-
-                        # 智能创建信号：基于实际数据或配置
-                        signal_obj = self._create_smart_signal(strategy_config)
-                        if signal_obj:
-                            strategy_config['kwargs']['signal'] = signal_obj
-                            logger.info("将<PRED>信号转换为智能信号对象")
-                        else:
-                            logger.warning("无法创建智能信号，移除signal参数")
-                    except Exception as e:
-                        logger.warning(f"创建智能信号失败: {e}，移除signal参数")
-                        # 不设置signal参数，让策略使用默认行为
+                if signal is None:
+                    logger.warning("signal 为空，跳过")
                 else:
-                    strategy_config['kwargs']['signal'] = signal  # 添加到kwargs中
-                    logger.info("将signal参数移动到kwargs中")
+                    signal_obj = self._normalize_signal(signal)
+                    if signal_obj is not None:
+                        strategy_config['kwargs']['signal'] = signal_obj
+                        logger.info(f"signal 已归一化为: {type(signal_obj).__name__}")
+                    else:
+                        logger.warning("无法归一化 signal，移除该参数")
 
             logger.info(f"最终策略配置: {strategy_config}")
             strategy = init_instance_by_config(strategy_config)
@@ -395,8 +511,12 @@ class QlibCoreIntegration:
             strategy_config = backtest_config.get('strategy', {})
             logger.info(f"回测策略配置: {strategy_config}")
 
+            # 优先复用上游策略节点已经建好的实例（它内部已经持有真实 signal）；
+            # 重新 init_instance_by_config 会把 signal 丢掉，导致回测无信号。
+            strategy = strategy_config.pop('_strategy_instance', None)
+
             # 检查策略配置中是否包含信号对象
-            if 'kwargs' in strategy_config and 'signal' in strategy_config['kwargs']:
+            if strategy is None and 'kwargs' in strategy_config and 'signal' in strategy_config['kwargs']:
                 signal_obj = strategy_config['kwargs']['signal']
                 logger.info(f"策略信号对象类型: {type(signal_obj)}")
                 if hasattr(signal_obj, 'signal'):
@@ -405,23 +525,14 @@ class QlibCoreIntegration:
                     # 检查信号数据是否有效
                     signal_df = signal_obj.signal
                     if signal_df.empty:
-                        logger.warning("信号DataFrame为空，尝试重新创建信号")
-                        # 重新创建信号
-                        from qlib.backtest.signal import create_signal_from
-                        import pandas as pd
-                        import numpy as np
+                        logger.error(
+                            "❌ 信号 DataFrame 为空，无法回测。"
+                            "原实现会伪造随机信号继续跑，但那样的回测结果毫无意义；"
+                            "这里直接失败，让上游把预测链路修好。")
+                        return None
 
-                        # 创建简单的默认信号
-                        dates = pd.date_range('2020-01-01', '2020-01-10', freq='D')
-                        stocks = ['000001.SZ', '000002.SZ', '000858.SZ']
-                        signal_values = np.random.normal(0, 0.1, (len(dates), len(stocks)))
-                        signal_df = pd.DataFrame(signal_values, index=dates, columns=stocks)
-
-                        new_signal_obj = create_signal_from(signal_df)
-                        strategy_config['kwargs']['signal'] = new_signal_obj
-                        logger.info("重新创建了默认信号")
-
-            strategy = init_instance_by_config(strategy_config)
+            if strategy is None:
+                strategy = init_instance_by_config(strategy_config)
 
             # 创建执行器
             executor_config = {
@@ -446,11 +557,133 @@ class QlibCoreIntegration:
             )
 
             logger.info("✅ 成功运行Qlib回测")
+
+            # 回测返回的是 [(portfolio_metrics, indicator), ...] 结构。
+            # 之前直接把原始对象丢给上层，界面上什么指标都看不到。
+            # 这里算出常用的年化收益 / 最大回撤 / 信息比率等，方便节点展示。
+            result = self._attach_metrics(result)
             return result
 
         except Exception as e:
             logger.error(f"❌ 运行Qlib回测失败: {e}")
+            # 打印完整堆栈：回测报错往往在 qlib 内部深层，只有消息
+            # （如 "index 4943 is out of bounds for axis 0 with size 4943"）
+            # 无法定位，必须看调用链。
+            logger.error("回测异常堆栈:\n%s", traceback.format_exc())
             return None
+
+    @staticmethod
+    def _attach_metrics(result: Any) -> Any:
+        """从 qlib 回测结果里提取并附加常用绩效指标。
+
+        qlib ``backtest`` 的真实返回结构是::
+
+            (portfolio_dict, indicator_dict)
+
+        两者都是 **按频率索引的 dict**，形如
+        ``{"day": (portfolio_metrics_DataFrame, indicator_obj)}``。
+        注意不是 list-of-tuples —— 这里必须按 dict 取值，
+        否则会踩 ``KeyError: 0``。
+
+        ``portfolio_metrics`` 的列通常包含
+        ``return / cost / turnover / account / bench``。
+        """
+        try:
+            import numpy as np
+            import pandas as pd
+        except Exception:
+            return result
+
+        try:
+            pm = None
+            freq_used = None
+
+            # 形态 A：标准二元组 (portfolio_dict, indicator_dict)
+            if isinstance(result, tuple) and len(result) == 2 and isinstance(result[0], dict):
+                portfolio_dict = result[0]
+                if portfolio_dict:
+                    # 频率键实际是 '1min' / '1day' 这类（不是裸 'day'）。
+                    # 优先选日频，找不到就取第一个可用频率。
+                    freq_used = next(
+                        (k for k in portfolio_dict if 'day' in str(k)),
+                        next(iter(portfolio_dict)))
+                    entry = portfolio_dict[freq_used]
+                    if isinstance(entry, (list, tuple)) and len(entry) > 0:
+                        pm = entry[0]
+                    elif isinstance(entry, pd.DataFrame):
+                        pm = entry
+
+            # 形态 B：list-of-tuples（旧版本 / 其他调用方）
+            elif isinstance(result, (list, tuple)) and len(result) > 0:
+                first = result[0]
+                if isinstance(first, (list, tuple)) and len(first) > 0:
+                    pm = first[0]
+                elif isinstance(first, pd.DataFrame):
+                    pm = first
+
+            if not isinstance(pm, pd.DataFrame) or pm.empty:
+                logger.warning(
+                    "回测已完成，但未取到 portfolio_metrics（类型 %s）—— 跳过绩效指标计算",
+                    type(pm).__name__)
+                return result
+            if 'return' not in pm.columns:
+                logger.warning("portfolio_metrics 缺少 'return' 列，可用列: %s", list(pm.columns))
+                return result
+
+            ret = pm['return'].dropna()
+            if ret.empty:
+                logger.warning("portfolio_metrics 的 return 全为 NaN，无法计算绩效")
+                return result
+
+            n = len(ret)
+            ann = 252
+            cum = (1 + ret).cumprod()
+            metrics = {
+                'freq': freq_used,
+                'start': str(ret.index[0]),
+                'end': str(ret.index[-1]),
+                'n_days': int(n),
+                'total_return': float(cum.iloc[-1] - 1),
+                'annualized_return': float(cum.iloc[-1] ** (ann / n) - 1),
+                'mean_daily_return': float(ret.mean()),
+                'std_daily_return': float(ret.std()),
+                'max_drawdown': float((cum / cum.cummax() - 1).min()),
+                'sharpe': float(
+                    (ret.mean() / ret.std() * np.sqrt(ann)) if ret.std() and ret.std() > 0 else 0.0
+                ),
+            }
+            if 'turnover' in pm.columns:
+                metrics['avg_turnover'] = float(pm['turnover'].dropna().mean())
+            if 'cost' in pm.columns:
+                metrics['total_cost'] = float(pm['cost'].dropna().sum())
+            if 'account' in pm.columns:
+                acc = pm['account'].dropna()
+                if not acc.empty:
+                    metrics['final_account'] = float(acc.iloc[-1])
+            # 超额收益（相对基准）
+            if 'bench' in pm.columns:
+                bench = pm['bench'].dropna()
+                if not bench.empty:
+                    n_b = len(bench)
+                    metrics['bench_total_return'] = float((1 + bench).prod() - 1)
+                    metrics['bench_annualized_return'] = float(
+                        (1 + bench).prod() ** (ann / n_b) - 1)
+                    metrics['excess_annualized_return'] = (
+                        metrics['annualized_return'] - metrics['bench_annualized_return'])
+
+            logger.info(
+                "📊 回测绩效[%s]: 总收益 %.2f%% | 年化 %.2f%% | 最大回撤 %.2f%% | 夏普 %.2f | %s ~ %s",
+                freq_used,
+                metrics['total_return'] * 100,
+                metrics['annualized_return'] * 100,
+                metrics['max_drawdown'] * 100,
+                metrics['sharpe'],
+                metrics['start'], metrics['end'])
+            return (result, metrics)
+        except Exception as e:
+            logger.warning(f"绩效指标计算失败(不影响回测本身): {e}")
+            logger.debug("指标计算堆栈:\n%s", traceback.format_exc())
+            return result
 
     def parse_yaml_config(self, yaml_data: Dict[str, Any]) -> Dict[str, Any]:
         """解析Qlib YAML配置"""
@@ -517,118 +750,88 @@ class QlibCoreIntegration:
             logger.error(f"❌ 执行Qlib工作流失败: {e}")
             return {}
 
-    def _create_smart_signal(self, strategy_config: Dict[str, Any]) -> Optional[Any]:
-        """智能创建信号对象"""
-        try:
-            from qlib.backtest.signal import create_signal_from
-            import pandas as pd
-            import numpy as np
+    def _normalize_signal(self, signal: Any) -> Optional[Any]:
+        """把各种形态的 signal 统一成 qlib 可用的 Signal 对象。
 
-            # 尝试从全局上下文获取实际数据
-            signal_data = self._get_signal_data_from_context()
+        qlib 的 ``SignalStrategy`` 内部会对传入的 ``signal`` 调用
+        ``create_signal_from``。而 ``create_signal_from`` 只认这几种输入：
 
-            if signal_data is not None:
-                # 使用实际数据创建信号
-                signal_obj = create_signal_from(signal_data)
-                logger.info("使用实际数据创建信号")
-                return signal_obj
+            - 已经是 ``Signal`` 实例 → 原样返回
+            - ``tuple`` / ``list``  → ``ModelSignal(*obj)``（即 ``(model, dataset)``）
+            - ``dict`` / ``str``    → ``init_instance_by_config``（配置字典）
+            - ``pd.DataFrame`` / ``pd.Series`` → ``SignalWCache(signal=obj)``
+            - 其他                  → ``NotImplementedError("This type of signal is not supported")``
 
-            # 如果没有实际数据，创建基于配置的智能信号
-            signal_obj = self._create_config_based_signal(strategy_config)
-            if signal_obj:
-                logger.info("使用配置创建智能信号")
-                return signal_obj
+        所以「不是 qlib 信号」这个报错的真正来源只有一个：传进来的东西
+        不在上面这五种里（例如 numpy 数组、或者是 ``<PRED>`` 这类占位字符串
+        但上游没给出真实预测）。
 
-            # 最后回退到最小化默认信号
-            signal_obj = self._create_minimal_signal()
-            logger.info("使用最小化默认信号")
-            return signal_obj
+        本方法负责把它转成合法的 ``pd.Series/DataFrame`` 或 ``Signal``：
+        ``<PRED>`` 占位符会取上游缓存的真实预测；取不到就返回 ``None``，
+        让调用方明确报错，而不是伪造数据把回测带偏。
+        """
+        from qlib.backtest.signal import Signal, create_signal_from
+        import pandas as pd
+        import numpy as np
 
-        except Exception as e:
-            logger.error(f"智能信号创建失败: {e}")
+        # 1) 已经是 Signal 对象
+        if isinstance(signal, Signal):
+            return signal
+
+        # 2) <PRED> 占位符 → 取上游模型预测
+        if isinstance(signal, str) and signal.strip() == '<PRED>':
+            cached = self.get_cached_prediction()
+            if cached is None:
+                logger.warning(
+                    "⚠️ signal='<PRED>' 但上游没有可用预测（模型未训练或未连线）。"
+                    "回测缺少信号，已放弃本次策略创建。")
+                return None
+            signal = cached
+
+        # 3) pandas 对象 → 直接交给 SignalWCache；这里做一次索引校验
+        if isinstance(signal, (pd.Series, pd.DataFrame)):
+            if signal.empty:
+                logger.warning("signal 为空 DataFrame/Series")
+                return None
+            # SignalWCache 要求索引含 (datetime, instrument)。
+            # 预测结果通常是 MultiIndex；若上游给的是宽表（日期×股票），
+            # 这里 stack 成长表，否则回测取不到数值。
+            if isinstance(signal, pd.DataFrame):
+                idx_names = list(signal.index.names)
+                if 'datetime' not in idx_names:
+                    signal = signal.stack()
+                    signal.index = signal.index.set_names(['datetime', 'instrument'])
+                if signal.index.nlevels < 2:
+                    logger.warning(f"signal 索引层级不足({signal.index.nlevels})，可能无法回测")
+                signal = signal.astype('float64')
+                if isinstance(signal, pd.DataFrame):
+                    signal = signal.iloc[:, 0]
+            return create_signal_from(signal)
+
+        # 4) numpy 数组 → 包成 Series（需要外部提供索引，风险较高，仅兜底）
+        if isinstance(signal, np.ndarray):
+            logger.warning("signal 是裸 ndarray，缺少 datetime/instrument 索引，无法可靠回测")
             return None
 
-    def _get_signal_data_from_context(self) -> Optional[Any]:
-        """从全局上下文获取信号数据"""
-        try:
-            # 尝试从全局变量或缓存中获取预测数据
-            # 这里可以扩展为从工作流上下文、缓存等获取实际数据
-            return None
-        except Exception as e:
-            logger.debug(f"无法从上下文获取信号数据: {e}")
-            return None
+        # 5) dict / str 配置 → 交给 qlib
+        if isinstance(signal, (dict, str, list, tuple)):
+            try:
+                return create_signal_from(signal)
+            except Exception as e:
+                logger.warning(f"按配置创建 signal 失败: {e}")
+                return None
 
-    def _create_config_based_signal(self, strategy_config: Dict[str, Any]) -> Optional[Any]:
-        """基于配置创建智能信号"""
-        try:
-            from qlib.backtest.signal import create_signal_from
-            import pandas as pd
-            import numpy as np
+        logger.warning(f"signal 形态无法识别: {type(signal)}")
+        return None
 
-            # 从策略配置中提取信息
-            kwargs = strategy_config.get('kwargs', {})
-            topk = kwargs.get('topk', 50)
+    def get_cached_prediction(self) -> Optional[Any]:
+        """取最近一次模型节点产出的预测（供策略节点复用）。"""
+        return self._last_prediction
 
-            # 创建基于topk的智能信号
-            # 使用更合理的股票池（基于topk数量）
-            n_stocks = min(topk * 2, 100)  # 创建2倍于topk的股票池
+    def set_cached_prediction(self, predictions: Any) -> None:
+        """记录模型节点产出的预测，供 <PRED> 信号使用。"""
+        self._last_prediction = predictions
 
-            # 生成更合理的股票代码
-            stock_codes = [f"{i:06d}.SZ" for i in range(1, n_stocks + 1)]
-
-            # 创建更合理的时间范围（基于当前日期）
-            from datetime import datetime, timedelta
-            end_date = datetime.now()
-            start_date = end_date - timedelta(days=30)  # 最近30天
-
-            dates = pd.date_range(start=start_date, end=end_date, freq='D')
-
-            # 创建更合理的信号值（基于正态分布）
-            np.random.seed(42)  # 固定随机种子确保可重复性
-            signal_values = np.random.normal(0, 0.1, (len(dates), len(stock_codes)))
-
-            # 创建信号DataFrame
-            signal_df = pd.DataFrame(
-                signal_values,
-                index=dates,
-                columns=stock_codes
-            )
-
-            # 转换为信号对象
-            signal_obj = create_signal_from(signal_df)
-            return signal_obj
-
-        except Exception as e:
-            logger.error(f"基于配置创建信号失败: {e}")
-            return None
-
-    def _create_minimal_signal(self) -> Optional[Any]:
-        """创建最小化默认信号"""
-        try:
-            from qlib.backtest.signal import create_signal_from
-            import pandas as pd
-            import numpy as np
-
-            # 创建最小化的信号（仅用于测试）
-            minimal_stocks = ['000001.SZ', '000002.SZ']
-            minimal_dates = pd.date_range('2020-01-01', periods=5, freq='D')
-
-            # 创建零信号（中性信号）
-            signal_values = np.zeros((len(minimal_dates), len(minimal_stocks)))
-
-            signal_df = pd.DataFrame(
-                signal_values,
-                index=minimal_dates,
-                columns=minimal_stocks
-            )
-
-            # 转换为信号对象
-            signal_obj = create_signal_from(signal_df)
-            return signal_obj
-
-        except Exception as e:
-            logger.error(f"创建最小化信号失败: {e}")
-            return None
 
 # 全局Qlib核心集成实例
 qlib_core = QlibCoreIntegration()

@@ -40,12 +40,22 @@ class QlibBaseNode(BaseNode):
         self._node_id = None
         self._status = "idle"  # idle, running, success, failed, warning
         self._status_message = ""
-        self._inputs = {}
-        self._outputs = {}
+        self._input_values = {}
+        self._output_values = {}
         self._properties = {}
         self._execution_time = 0.0
         self._memory_usage = 0.0
-        
+
+        # 端口元数据（与 core/base_node.py 的 RockXQlibBaseNode 保持同一设计：
+        # 既记录端口的业务类型，又调用 NodeGraphQt 原生 add_input/add_output
+        # 建立可视端口。backtest/model/strategy/data 节点用的是 add_input_port
+        # 这套 API，此前基类没提供，导致这些节点无法实例化。）
+        self._input_ports = {}
+        self._output_ports = {}
+
+        # add_rockx_property 声明的属性类型，get_property 据此做类型转换
+        self._rockx_property_types = {}
+
         # 初始化节点
         self._initialize_node()
     
@@ -88,7 +98,51 @@ class QlibBaseNode(BaseNode):
     def _setup_ports(self):
         """设置输入输出端口 - 子类实现"""
         pass
-    
+
+    def add_input_port(self, name: str, data_type: Any = "any",
+                       required: bool = True, description: str = "",
+                       default_value: Any = None):
+        """添加输入端口。
+
+        与 core/base_node.py 的 RockXQlibBaseNode.add_input_port 对齐：
+        记录业务元数据，同时在 NodeGraphQt 上建立真实可视端口，
+        这样节点既能在画布上连线，又能携带数据类型信息。
+        """
+        self._input_ports[name] = {
+            "name": name,
+            "data_type": data_type,
+            "required": required,
+            "description": description,
+            "default_value": default_value,
+        }
+        try:
+            self.add_input(name)
+        except Exception as e:
+            logger.warning(f"节点 {self.__class__.__name__} 建立输入端口 {name} 失败: {e}")
+        return name
+
+    def add_output_port(self, name: str, data_type: Any = "any",
+                        description: str = ""):
+        """添加输出端口，语义同 add_input_port。"""
+        self._output_ports[name] = {
+            "name": name,
+            "data_type": data_type,
+            "description": description,
+        }
+        try:
+            self.add_output(name)
+        except Exception as e:
+            logger.warning(f"节点 {self.__class__.__name__} 建立输出端口 {name} 失败: {e}")
+        return name
+
+    def get_port_info(self) -> Dict[str, Any]:
+        """返回端口元数据，便于属性面板与校验逻辑使用。"""
+        return {
+            "inputs": dict(self._input_ports),
+            "outputs": dict(self._output_ports),
+        }
+
+
     def validate_config(self) -> bool:
         """验证节点配置"""
         try:
@@ -148,7 +202,7 @@ class QlibBaseNode(BaseNode):
                 'node_id': self._node_id,
                 'start_time': None,
                 'end_time': None,
-                'inputs': self._inputs.copy(),
+                'inputs': self._input_values.copy(),
                 'outputs': {},
                 'memory_usage': 0,
                 'error_count': 0,
@@ -186,7 +240,7 @@ class QlibBaseNode(BaseNode):
             self._set_status("running", "正在执行...")
             
             # 更新输入
-            self._inputs.update(inputs)
+            self._input_values.update(inputs)
             
             # 执行具体逻辑
             result = self._execute_logic(inputs)
@@ -197,7 +251,7 @@ class QlibBaseNode(BaseNode):
             self._execution_time = end_time - start_time
             
             # 更新输出
-            self._outputs.update(result)
+            self._output_values.update(result)
             
             # 设置成功状态
             self._set_status("success", f"执行完成，耗时: {self._execution_time:.2f}秒")
@@ -224,8 +278,8 @@ class QlibBaseNode(BaseNode):
                 self._execution_context = None
             
             # 清理输入输出
-            self._inputs.clear()
-            self._outputs.clear()
+            self._input_values.clear()
+            self._output_values.clear()
             
             # 子类特定清理
             self._cleanup_specific()
@@ -268,37 +322,110 @@ class QlibBaseNode(BaseNode):
         """获取内存使用量"""
         return self._memory_usage
     
+    def add_rockx_property(self, name: str, prop_type: type = str,
+                           default: Any = None, label: str = "",
+                           description: str = ""):
+        """注册节点属性（设计文档约定的统一接口）。
+
+        此前基类未提供该方法，导致 backtest / model / strategy 共 18 个节点
+        一实例化就报 AttributeError: 'XXX' object has no attribute 'add_rockx_property'。
+
+        NodeGraphQt 只提供「文本输入 / 下拉菜单 / 勾选框」三类控件，没有数值控件，
+        因此 int/float 也用文本框承载；声明的 Python 类型记在 _rockx_property_types，
+        由 get_property 负责转换，保证下游拿到的仍是数值类型。
+
+        属性同时写入 NodeGraphQt 的属性存储（属性编辑器据此显示与编辑）与节点自身的
+        _properties，两边保持一致——这是属性编辑器此前空白、改了不生效的根因。
+        """
+        label = label or name
+        self._rockx_property_types[name] = prop_type
+        ui_value = default
+
+        try:
+            if prop_type is bool:
+                ui_value = bool(default) if default is not None else False
+                self.add_checkbox(name, label, label, ui_value, tooltip=description)
+            elif isinstance(prop_type, (list, tuple)):
+                items = [str(x) for x in prop_type]
+                self.add_combo_menu(name, label, items, tooltip=description)
+                ui_value = str(default) if default is not None else (items[0] if items else "")
+            else:
+                ui_value = "" if default is None else str(default)
+                self.add_text_input(name, label, ui_value, tooltip=description)
+        except Exception as e:
+            logger.warning(f"节点 {self.__class__.__name__} 注册属性 {name} 失败: {e}")
+
+        self._properties[name] = default if default is not None else ui_value
+        try:
+            super().set_property(name, ui_value, push_undo=False)
+        except Exception:
+            pass
+        return name
+
     def set_property(self, key: str, value: Any):
-        """设置属性"""
+        """设置属性：同步写入节点字典与 NodeGraphQt 属性存储。"""
         self._properties[key] = value
-    
+        try:
+            super().set_property(key, value, push_undo=False)
+        except Exception:
+            pass
+
     def get_property(self, key: str, default: Any = None) -> Any:
-        """获取属性"""
-        return self._properties.get(key, default)
-    
+        """获取属性。
+
+        取值顺序：NodeGraphQt 属性存储（属性编辑器改的就是它）
+        → 节点自身 _properties → default。
+        最后按 add_rockx_property 声明的类型转换，避免下游拿到字符串。
+        """
+        value = None
+        found = False
+        try:
+            raw = super().get_property(key)
+            if raw is not None:
+                value, found = raw, True
+        except Exception:
+            pass
+        if not found and key in self._properties:
+            value, found = self._properties[key], True
+        if not found:
+            return default
+
+        declared = self._rockx_property_types.get(key)
+        if declared and declared is not bool and value is not None:
+            try:
+                if declared is int:
+                    return int(float(value))
+                if declared is float:
+                    return float(value)
+                if declared is str:
+                    return str(value)
+            except (TypeError, ValueError):
+                return value
+        return value
+
     def set_input(self, port_name: str, value: Any):
         """设置输入"""
-        self._inputs[port_name] = value
+        self._input_values[port_name] = value
     
     def get_input(self, port_name: str, default: Any = None) -> Any:
         """获取输入"""
-        return self._inputs.get(port_name, default)
+        return self._input_values.get(port_name, default)
     
     def set_output(self, port_name: str, value: Any):
         """设置输出"""
-        self._outputs[port_name] = value
+        self._output_values[port_name] = value
     
     def get_output(self, port_name: str, default: Any = None) -> Any:
         """获取输出"""
-        return self._outputs.get(port_name, default)
+        return self._output_values.get(port_name, default)
     
     def get_all_inputs(self) -> Dict[str, Any]:
         """获取所有输入"""
-        return self._inputs.copy()
+        return self._input_values.copy()
     
     def get_all_outputs(self) -> Dict[str, Any]:
         """获取所有输出"""
-        return self._outputs.copy()
+        return self._output_values.copy()
     
     def get_all_properties(self) -> Dict[str, Any]:
         """获取所有属性"""
@@ -314,8 +441,8 @@ class QlibBaseNode(BaseNode):
             'properties': self._properties.copy(),
             'execution_time': self._execution_time,
             'memory_usage': self._memory_usage,
-            'inputs': self._inputs.copy(),
-            'outputs': self._outputs.copy(),
+            'inputs': self._input_values.copy(),
+            'outputs': self._output_values.copy(),
         }
     
     def from_dict(self, data: Dict[str, Any]):
@@ -326,8 +453,8 @@ class QlibBaseNode(BaseNode):
         self._properties.update(data.get('properties', {}))
         self._execution_time = data.get('execution_time', 0.0)
         self._memory_usage = data.get('memory_usage', 0.0)
-        self._inputs.update(data.get('inputs', {}))
-        self._outputs.update(data.get('outputs', {}))
+        self._input_values.update(data.get('inputs', {}))
+        self._output_values.update(data.get('outputs', {}))
     
     def __str__(self) -> str:
         """字符串表示"""

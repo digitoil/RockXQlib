@@ -14,22 +14,34 @@ from typing import Dict, Any, Optional, List, Union
 # 添加路径
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+# ---------------------------------------------------------------------------
+# 导入策略：NodeGraphQt 是硬依赖（拿不到就建不出节点），必须显式失败；
+# 三个后端服务各自独立 try，任何一个缺失都只让对应能力降级，
+# 绝不能把 BaseNode 换成空壳占位类——那会让节点失去 add_input/add_output
+# 等全部端口 API，拖拽建节点时报 AttributeError。
+# ---------------------------------------------------------------------------
+from NodeGraphQt import BaseNode
+
+NODEGRAPH_AVAILABLE = True
+
 try:
     from core.qlib_core_integration import qlib_core
-    from core.ai_integration import RockXQlibAIIntegrationManager
-    from core.ollama_integration import RockXQlibOllamaInterface
-    from NodeGraphQt import BaseNode
-    NODEGRAPH_AVAILABLE = True
 except ImportError as e:
-    print(f"导入失败: {e}")
-    # 创建占位符
-    class BaseNode:
-        def __init__(self):
-            pass
+    logger.warning(f"qlib_core 不可用，Qlib 相关功能降级: {e}")
     qlib_core = None
+
+try:
+    from core.ai_integration import RockXQlibAIIntegrationManager
+except ImportError as e:
+    logger.warning(f"AI 集成管理器不可用，AI 节点将返回本地分析: {e}")
     RockXQlibAIIntegrationManager = None
+
+try:
+    from core.ollama_integration import RockXQlibOllamaInterface
+except ImportError as e:
+    logger.warning(f"Ollama 接口不可用: {e}")
     RockXQlibOllamaInterface = None
-    NODEGRAPH_AVAILABLE = False
+
 
 logger = logging.getLogger(__name__)
 

@@ -17,8 +17,8 @@ import warnings
 try:
     import qlib
     from qlib.contrib.model import LinearModel, LGBModel, XGBModel, CatBoostModel
-    from qlib.contrib.model import GRU, LSTM, ALSTM, GATs, SFM, Transformer
-    from qlib.contrib.model import TabNetModel, TCNModel
+    # 注意类名与本 qlib 版本一致：SFM -> SFM_Model、TabnetModel、TCN
+    from qlib.contrib.model import GRU, LSTM, ALSTM, GATs, SFM_Model, TabnetModel, TCN
     from qlib.utils import init_instance_by_config
     from qlib.workflow import R
     QLIB_AVAILABLE = True
@@ -26,10 +26,20 @@ except ImportError as e:
     QLIB_AVAILABLE = False
     warnings.warn(f"Qlib not available, some features will be limited. Error: {e}")
 
-# 添加核心模块路径
+# Transformer 并非所有 qlib 版本都提供，单独探测，缺失时置 None
+try:
+    from qlib.contrib.model import Transformer
+except ImportError:
+    Transformer = None
+
+# 添加核心模块路径（同时兼容包内导入与顶层模块导入）
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'core'))
-from qlib_base_node import QlibBaseNode
-from qlib_model_node import QlibModelNode
+try:
+    from .qlib_base_node import QlibBaseNode
+    from .qlib_model_node import QlibModelNode
+except ImportError:
+    from qlib_base_node import QlibBaseNode
+    from qlib_model_node import QlibModelNode
 
 logger = logging.getLogger(__name__)
 

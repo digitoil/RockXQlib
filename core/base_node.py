@@ -69,6 +69,11 @@ class RockXQlibDataType(Enum):
     MODEL = "model"
     STRATEGY = "strategy"
     SIGNAL = "signal"
+    # 以下三项被 nodes/data_nodes.py 使用，此前缺失导致 RockXQlibDataNode /
+    # RockXQlibAlphaNode 实例化时抛 AttributeError
+    HANDLER = "handler"
+    DATASET = "dataset"
+    PREDICTION = "prediction"
 
 @dataclass
 class RockXQlibPortInfo:

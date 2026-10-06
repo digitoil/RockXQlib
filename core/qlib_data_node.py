@@ -29,7 +29,12 @@ try:
 except ImportError:
     QLIB_AVAILABLE = False
 
-from .qlib_base_node import QlibBaseNode
+# 本模块既可能作为包内模块导入（core.qlib_data_node），
+# 也可能被 nodes/* 以顶层模块方式导入（qlib_data_node），两种都要兼容。
+try:
+    from .qlib_base_node import QlibBaseNode
+except ImportError:
+    from qlib_base_node import QlibBaseNode
 
 logger = logging.getLogger(__name__)
 

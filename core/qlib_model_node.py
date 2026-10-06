@@ -27,7 +27,12 @@ try:
 except ImportError:
     QLIB_AVAILABLE = False
 
-from .qlib_base_node import QlibBaseNode
+# 本模块既可能作为包内模块导入（core.qlib_model_node），
+# 也可能被 nodes/* 以顶层模块方式导入（qlib_model_node），两种都要兼容。
+try:
+    from .qlib_base_node import QlibBaseNode
+except ImportError:
+    from qlib_base_node import QlibBaseNode
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +41,7 @@ class QlibModelNode(QlibBaseNode):
     
     def __init__(self):
         super().__init__()
-        self._model = None
+        self._ml_model = None
         self._model_config = {}
         self._training_data = None
         self._test_data = None
@@ -147,18 +152,18 @@ class QlibModelNode(QlibBaseNode):
             model_params = self.get_property('model_params', {})
             
             if model_type == 'linear':
-                self._model = self._create_linear_model(model_name, model_params)
+                self._ml_model = self._create_linear_model(model_name, model_params)
             elif model_type == 'tree':
-                self._model = self._create_tree_model(model_name, model_params)
+                self._ml_model = self._create_tree_model(model_name, model_params)
             elif model_type == 'neural':
-                self._model = self._create_neural_model(model_name, model_params)
+                self._ml_model = self._create_neural_model(model_name, model_params)
             elif model_type == 'ensemble':
-                self._model = self._create_ensemble_model(model_name, model_params)
+                self._ml_model = self._create_ensemble_model(model_name, model_params)
             else:
                 self._set_status("failed", f"不支持的模型类型: {model_type}")
                 return False
             
-            if self._model is None:
+            if self._ml_model is None:
                 self._set_status("failed", "模型初始化失败")
                 return False
             
@@ -282,7 +287,7 @@ class QlibModelNode(QlibBaseNode):
     def train(self, train_data: Any, config: Dict) -> Any:
         """训练模型"""
         try:
-            if self._model is None:
+            if self._ml_model is None:
                 self._set_status("failed", "模型未初始化")
                 return None
             
@@ -298,17 +303,17 @@ class QlibModelNode(QlibBaseNode):
                 X_train = self._select_features(X_train, y_train)
             
             # 训练模型
-            if hasattr(self._model, 'fit'):
+            if hasattr(self._ml_model, 'fit'):
                 # sklearn模型
-                self._model.fit(X_train, y_train)
-            elif QLIB_AVAILABLE and hasattr(self._model, 'fit'):
+                self._ml_model.fit(X_train, y_train)
+            elif QLIB_AVAILABLE and hasattr(self._ml_model, 'fit'):
                 # Qlib模型
                 if isinstance(train_data, DatasetH):
-                    self._model.fit(train_data)
+                    self._ml_model.fit(train_data)
                 else:
                     # 创建临时数据集
                     dataset = self._create_dataset(X_train, y_train)
-                    self._model.fit(dataset)
+                    self._ml_model.fit(dataset)
             else:
                 self._set_status("failed", "模型不支持训练")
                 return None
@@ -321,7 +326,7 @@ class QlibModelNode(QlibBaseNode):
                 self._perform_cross_validation(X_train, y_train)
             
             self._set_status("success", "模型训练完成")
-            return self._model
+            return self._ml_model
             
         except Exception as e:
             self._set_status("failed", f"模型训练失败: {e}")
@@ -395,7 +400,7 @@ class QlibModelNode(QlibBaseNode):
             cv_folds = self.get_property('cv_folds', 5)
             scoring = 'neg_mean_squared_error'
             
-            scores = cross_val_score(self._model, X, y, cv=cv_folds, scoring=scoring)
+            scores = cross_val_score(self._ml_model, X, y, cv=cv_folds, scoring=scoring)
             
             self._evaluation_metrics['cv_scores'] = scores.tolist()
             self._evaluation_metrics['cv_mean'] = scores.mean()
@@ -410,7 +415,7 @@ class QlibModelNode(QlibBaseNode):
         """模型预测"""
         try:
             if model is None:
-                model = self._model
+                model = self._ml_model
             
             if model is None:
                 self._set_status("failed", "模型未初始化")
@@ -469,7 +474,7 @@ class QlibModelNode(QlibBaseNode):
         """模型评估"""
         try:
             if model is None:
-                model = self._model
+                model = self._ml_model
             
             if model is None:
                 self._set_status("failed", "模型未初始化")
@@ -562,7 +567,7 @@ class QlibModelNode(QlibBaseNode):
             
             # 加载模型
             model = joblib.load(model_path)
-            self._model = model
+            self._ml_model = model
             
             # 加载元数据
             metadata_path = model_path.replace('.pkl', '_metadata.json')
@@ -583,25 +588,25 @@ class QlibModelNode(QlibBaseNode):
     def get_feature_importance(self) -> Dict[str, float]:
         """获取特征重要性"""
         try:
-            if self._model is None:
+            if self._ml_model is None:
                 return {}
             
-            if hasattr(self._model, 'feature_importances_'):
+            if hasattr(self._ml_model, 'feature_importances_'):
                 # 树模型的特征重要性
-                if hasattr(self._model, 'feature_names_in_'):
-                    feature_names = self._model.feature_names_in_
+                if hasattr(self._ml_model, 'feature_names_in_'):
+                    feature_names = self._ml_model.feature_names_in_
                 else:
-                    feature_names = [f'feature_{i}' for i in range(len(self._model.feature_importances_))]
+                    feature_names = [f'feature_{i}' for i in range(len(self._ml_model.feature_importances_))]
                 
-                return dict(zip(feature_names, self._model.feature_importances_))
-            elif hasattr(self._model, 'coef_'):
+                return dict(zip(feature_names, self._ml_model.feature_importances_))
+            elif hasattr(self._ml_model, 'coef_'):
                 # 线性模型的系数
-                if hasattr(self._model, 'feature_names_in_'):
-                    feature_names = self._model.feature_names_in_
+                if hasattr(self._ml_model, 'feature_names_in_'):
+                    feature_names = self._ml_model.feature_names_in_
                 else:
-                    feature_names = [f'feature_{i}' for i in range(len(self._model.coef_))]
+                    feature_names = [f'feature_{i}' for i in range(len(self._ml_model.coef_))]
                 
-                return dict(zip(feature_names, abs(self._model.coef_)))
+                return dict(zip(feature_names, abs(self._ml_model.coef_)))
             else:
                 logger.warning("模型不支持特征重要性")
                 return {}
@@ -619,14 +624,14 @@ class QlibModelNode(QlibBaseNode):
             'evaluation_metrics': self._evaluation_metrics,
             'feature_importance': self.get_feature_importance(),
             'training_time': self._execution_time,
-            'is_trained': self._model is not None
+            'is_trained': self._ml_model is not None
         }
     
     def _cleanup_specific(self):
         """清理模型节点特定资源"""
         try:
             # 清理模型
-            self._model = None
+            self._ml_model = None
             
             # 清理数据
             self._training_data = None

@@ -16,8 +16,17 @@ import warnings
 # Qlib imports
 try:
     import qlib
-    from qlib.contrib.strategy import TopkDropoutStrategy, LongShortStrategy
-    from qlib.contrib.strategy import PortfolioStrategy, RiskStrategy
+    # 注意：LongShortStrategy / PortfolioStrategy / RiskStrategy 在 qlib 0.9.x 中
+    # 并不存在（真实可用的是 TopkDropoutStrategy、SoftTopkStrategy、
+    # EnhancedIndexingStrategy、WeightStrategyBase、TWAPStrategy 等）。
+    # 此前导入这三个不存在的名字会让整个 try 失败、QLIB_AVAILABLE 变 False，
+    # 连带让本文件所有策略节点失去 Qlib 能力，故改为只导入真实存在的类。
+    from qlib.contrib.strategy import (
+        TopkDropoutStrategy,
+        SoftTopkStrategy,
+        EnhancedIndexingStrategy,
+        WeightStrategyBase,
+    )
     from qlib.utils import init_instance_by_config
     from qlib.workflow import R
     QLIB_AVAILABLE = True

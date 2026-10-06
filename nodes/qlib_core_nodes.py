@@ -17,18 +17,22 @@ from typing import Dict, Any, Optional, List, Union
 # 添加路径
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# 导入策略：NodeGraphQt 是硬依赖（拿不到就建不出节点），必须显式失败。
+# 原先把 qlib_core 与 BaseNode 放在同一个 try 里，任一导入失败就把 BaseNode
+# 换成空壳占位类，结果所有核心节点失去 add_input/add_output 等全部端口 API，
+# 建节点时报 "object has no attribute 'add_output'"。两者必须分开。
+# ---------------------------------------------------------------------------
+from NodeGraphQt import BaseNode
+
 try:
     from core.qlib_core_integration import qlib_core
-    from NodeGraphQt import BaseNode
-except ImportError as e:
-    print(f"导入失败: {e}")
-    # 创建占位符
-    class BaseNode:
-        def __init__(self):
-            pass
+except ImportError as _e:
+    logger.warning(f"qlib_core 不可用，Qlib 相关能力将降级: {_e}")
     qlib_core = None
 
-logger = logging.getLogger(__name__)
 
 class QlibCoreBaseNode(BaseNode):
     """基于Qlib核心的基节点"""
@@ -287,33 +291,34 @@ class QlibDatasetNode(QlibCoreBaseNode):
             try:
                 from qlib.data import D
                 # 尝试简单的数据获取来验证Qlib是否真正可用
-                test_data = D.features(['000001.SZ'], ['$close'], '2020-01-01', '2020-01-01')
+                test_data = D.features(['SH600000'], ['$close'], '2020-09-24', '2020-09-25')
                 logger.info("Qlib数据模块验证成功")
             except Exception as e:
-                logger.warning(f"Qlib数据模块验证失败: {e}，尝试重新初始化")
-                # 强制重新初始化
-                import qlib
-                qlib.init(provider_uri='~/.qlib/qlib_data/cn_data', region='cn')
-
-                # 再次验证
+                logger.warning(f"Qlib数据模块验证失败: {e}")
+                # 注意：这里不能硬编码 '~/.qlib/qlib_data/cn_data' 或调用无参 qlib.init()，
+                # 那会用 qlib 默认路径覆盖用户在「Qlib初始化」节点里配的 provider_uri，
+                # 导致后续取数全部落到一个不存在的目录上。
+                # 改为沿用当前已生效的 provider_uri 重新初始化。
+                cur_uri = None
                 try:
-                    from qlib.data import D
-                    test_data = D.features(['000001.SZ'], ['$close'], '2020-01-01', '2020-01-01')
-                    logger.info("重新初始化后Qlib数据模块验证成功")
-                except Exception as e2:
-                    logger.error(f"重新初始化后仍然失败: {e2}")
-                    # 如果仍然失败，尝试使用不同的初始化方式
+                    from qlib.config import C as _C
+                    _p = getattr(_C, "provider_uri", None)
+                    if isinstance(_p, dict):
+                        _p = _p.get("__DEFAULT_FREQ") or next(iter(_p.values()), None)
+                    cur_uri = str(_p) if _p else None
+                except Exception:
+                    cur_uri = None
+
+                if cur_uri:
                     try:
-                        import qlib
-                        qlib.init(provider_uri='~/.qlib/qlib_data/cn_data', region='cn',
-                                 redis_host='127.0.0.1', redis_port=6379, redis_task_db=1)
-                        logger.info("使用Redis配置重新初始化Qlib")
-                    except Exception as e3:
-                        logger.error(f"Redis配置初始化也失败: {e3}")
-                        # 最后尝试：直接使用默认配置
-                        import qlib
-                        qlib.init()
-                        logger.info("使用默认配置初始化Qlib")
+                        self.qlib_core.initialize_qlib(provider_uri=cur_uri, region="cn")
+                        from qlib.data import D as _D
+                        _D.features(['SH600000'], ['$close'], '2020-09-24', '2020-09-25')
+                        logger.info(f"沿用 {cur_uri} 重新初始化成功")
+                    except Exception as e2:
+                        logger.error(f"沿用当前数据路径重新初始化仍失败: {e2}")
+                else:
+                    logger.error("未取到有效的 provider_uri，请检查「Qlib初始化」节点的数据源URI设置")
 
             # 检查是否有TSDatasetH配置
             handler_kwargs = self.get_property('handler_kwargs')
@@ -569,15 +574,58 @@ class QlibModelNode(QlibCoreBaseNode):
             )
 
             if model is not None:
+                # 关键：不能只创建模型就返回。原实现到这里就结束了，
+                # 输出的 'predictions' 其实只是模型对象本身，没有任何预测值，
+                # 下游策略节点取不到信号，只能退回硬编码假信号，
+                # 回测因此报 "This type of signal is not supported"。
+                # 这里补上「训练 + 预测」，把真实的预测 DataFrame 传给策略。
+                dataset = None
+                if isinstance(dataset_input, dict):
+                    dataset = dataset_input.get('dataset') or dataset_input.get('data')
+                elif dataset_input is not None:
+                    dataset = dataset_input
+
+                predictions = None
+                train_error = None
+                if dataset is not None:
+                    try:
+                        logger.info("🚀 开始训练模型...")
+                        model.fit(dataset)
+                        predictions = model.predict(dataset)
+                        n_pred = len(predictions) if predictions is not None else 0
+                        logger.info(f"✅ 模型训练完成，预测样本数: {n_pred}")
+                        if n_pred == 0:
+                            predictions = None
+                            train_error = "模型预测结果为空"
+                    except Exception as e:
+                        train_error = str(e)
+                        logger.error(f"❌ 模型训练/预测失败: {e}")
+                else:
+                    train_error = "上游未提供数据集，无法训练"
+                    logger.warning(f"⚠️ {train_error}")
+
                 self._execution_result = {
-                    'status': 'success',
+                    'status': 'success' if predictions is not None else 'partial',
                     'model': model,
                     'model_class': model_class,
-                    'model_params': model_params
+                    'predictions': predictions,
+                    'trained': predictions is not None,
+                    'train_error': train_error,
                 }
                 self.set_output('model', self._execution_result)
                 self.set_output('predictions', self._execution_result)
-                logger.info(f"✅ 成功创建Qlib模型: {model_class}")
+                if predictions is not None:
+                    # 同时缓存到全局 qlib_core：策略节点即便没连线，
+                    # 也能通过 signal='<PRED>' 取到这份真实预测。
+                    try:
+                        from core.qlib_core_integration import qlib_core as _qc
+                        if _qc is not None:
+                            _qc.set_cached_prediction(predictions)
+                    except Exception as _e:
+                        logger.debug(f"缓存预测失败(不影响流程): {_e}")
+                    logger.info(f"✅ 成功创建并训练Qlib模型: {model_class}")
+                else:
+                    logger.warning(f"⚠️ 模型已创建但未产出预测: {model_class} ({train_error})")
                 return True
             else:
                 self._execution_result = {
@@ -638,16 +686,22 @@ class QlibStrategyNode(QlibCoreBaseNode):
             logger.info(f"策略节点module_path: {module_path}")
             logger.info(f"策略节点signal: {signal}")
 
-            # 获取策略参数
+            # 获取策略参数。
+            # 注意：strategy_kwargs 的默认值是字符串 '{}'，它是“真值”，
+            # 原实现据此进入分支并解析出空字典，把 strategy_params 里的
+            # topk / n_drop 覆盖掉，导致 TopkDropoutStrategy 报
+            # "missing 2 required keyword-only arguments: 'topk' and 'n_drop'"。
+            # 改为以 strategy_params 为基底，strategy_kwargs 作为覆盖项合并。
+            strategy_kwargs = dict(strategy_params) if isinstance(strategy_params, dict) else {}
             strategy_kwargs_str = self.get_property('strategy_kwargs')
             if strategy_kwargs_str:
                 try:
                     import json
-                    strategy_kwargs = json.loads(strategy_kwargs_str)
-                except:
-                    strategy_kwargs = strategy_params
-            else:
-                strategy_kwargs = strategy_params
+                    extra = json.loads(strategy_kwargs_str)
+                    if isinstance(extra, dict):
+                        strategy_kwargs.update(extra)
+                except Exception:
+                    pass
 
             if module_path:
                 # 使用完整的策略配置
@@ -662,25 +716,44 @@ class QlibStrategyNode(QlibCoreBaseNode):
                     if 'kwargs' not in strategy_config:
                         strategy_config['kwargs'] = {}
 
-                    # 如果signal是<PRED>字符串，转换为默认信号对象
+                    # <PRED> 表示「用上游模型的预测作为策略信号」。
+                    # 原实现无论上游有没有数据，都造一份 3 行硬编码假信号，
+                    # 与回测的股票池/日期区间完全不匹配，回测必然报
+                    # "This type of signal is not supported"。
+                    # 正确做法：从 predictions 输入里取出真实预测 DataFrame。
                     if signal == '<PRED>':
-                        try:
-                            from qlib.backtest.signal import create_signal_from
-                            import pandas as pd
+                        pred_frame = None
+                        if isinstance(predictions_input, dict):
+                            for key in ('predictions', 'prediction', 'pred', 'signal', 'data'):
+                                cand = predictions_input.get(key)
+                                if cand is not None and hasattr(cand, 'index') and len(cand) > 0:
+                                    pred_frame = cand
+                                    break
+                        elif predictions_input is not None and hasattr(predictions_input, 'index'):
+                            if len(predictions_input) > 0:
+                                pred_frame = predictions_input
 
-                            # 创建默认信号DataFrame
-                            default_signal = pd.DataFrame({
-                                '000001.SZ': [0.1, 0.2, 0.3],
-                                '000002.SZ': [0.2, 0.1, 0.4],
-                                '000858.SZ': [0.3, 0.4, 0.1]
-                            }, index=pd.date_range('2020-01-01', periods=3))
-
-                            signal_obj = create_signal_from(default_signal)
-                            strategy_config['kwargs']['signal'] = signal_obj
-                            logger.info("将<PRED>信号转换为默认信号对象")
-                        except Exception as e:
-                            logger.warning(f"创建默认信号失败: {e}，移除signal参数")
-                            # 不设置signal参数，让策略使用默认行为
+                        if pred_frame is not None:
+                            # qlib 的 SignalStrategy 接受 DataFrame，
+                            # 内部会用 create_signal_from 包装。
+                            # 同时缓存到 qlib_core，供全局 <PRED> 复用。
+                            strategy_config['kwargs']['signal'] = pred_frame
+                            try:
+                                from core.qlib_core_integration import qlib_core as _qc
+                                if _qc is not None:
+                                    _qc.set_cached_prediction(pred_frame)
+                            except Exception:
+                                pass
+                            logger.info(f"✅ 使用上游模型预测作为策略信号，样本数: {len(pred_frame)}")
+                        else:
+                            logger.error(
+                                "❌ 上游没有可用的预测数据，无法构建策略信号。"
+                                "请确认上游模型节点已完成训练与预测（检查模型节点是否报错）。")
+                            self._execution_result = {
+                                'status': 'failed',
+                                'error': '上游无预测数据，策略无法创建',
+                            }
+                            return False
                     else:
                         strategy_config['kwargs']['signal'] = signal
                         logger.info("将signal参数添加到kwargs中")
@@ -700,35 +773,32 @@ class QlibStrategyNode(QlibCoreBaseNode):
                         'module_path': 'qlib.contrib.strategy.signal_strategy',
                         'kwargs': strategy_params
                     }
-                    # 如果有signal参数，添加到kwargs中并转换为信号对象
+                    # signal 的统一归一化交给 qlib_core._normalize_signal 处理，
+                    # 这里不再伪造 3 行假数据（那会让回测完全失真）。
                     if signal:
-                        # 将signal添加到kwargs中，而不是顶层
                         if 'kwargs' not in strategy_config:
                             strategy_config['kwargs'] = {}
-
-                        # 如果signal是<PRED>字符串，转换为默认信号对象
                         if signal == '<PRED>':
                             try:
-                                from qlib.backtest.signal import create_signal_from
-                                import pandas as pd
-
-                                # 创建默认信号DataFrame
-                                default_signal = pd.DataFrame({
-                                    '000001.SZ': [0.1, 0.2, 0.3],
-                                    '000002.SZ': [0.2, 0.1, 0.4],
-                                    '000858.SZ': [0.3, 0.4, 0.1]
-                                }, index=pd.date_range('2020-01-01', periods=3))
-
-                                signal_obj = create_signal_from(default_signal)
-                                strategy_config['kwargs']['signal'] = signal_obj
-                                logger.info("将<PRED>信号转换为默认信号对象")
-                            except Exception as e:
-                                logger.warning(f"创建默认信号失败: {e}，移除signal参数")
-                                # 不设置signal参数，让策略使用默认行为
+                                from core.qlib_core_integration import qlib_core as _qc
+                                cached = _qc.get_cached_prediction() if _qc is not None else None
+                            except Exception:
+                                cached = None
+                            if cached is not None and hasattr(cached, 'index') and len(cached) > 0:
+                                strategy_config['kwargs']['signal'] = cached
+                                logger.info(f"使用缓存的模型预测作为信号，样本数: {len(cached)}")
+                            else:
+                                logger.error(
+                                    "❌ signal='<PRED>' 但无可用预测（上游模型未训练/未连线），"
+                                    "策略无法创建。")
+                                self._execution_result = {
+                                    'status': 'failed',
+                                    'error': '无可用预测数据',
+                                }
+                                return False
                         else:
                             strategy_config['kwargs']['signal'] = signal
                             logger.info("将signal参数添加到kwargs中")
-                    # 如果没有signal参数，不设置任何signal，让策略使用默认行为
 
             # 使用Qlib核心创建策略
             strategy = self.execute_qlib_operation(
@@ -812,6 +882,16 @@ class QlibBacktestNode(QlibCoreBaseNode):
                             'module_path': strategy_input.get('module_path', 'qlib.contrib.strategy.signal_strategy'),
                             'kwargs': strategy_input.get('strategy_params', {'topk': 50, 'n_drop': 5})
                         }
+                        # 上游策略节点已经建好了策略实例，且里面带着真实 signal。
+                        # 直接把实例透传给 run_backtest，避免重新 init 时丢掉 signal。
+                        _strat_obj = strategy_input.get('strategy')
+                        if _strat_obj is not None:
+                            strategy_config = {
+                                'class': strategy_input.get('strategy_class', 'TopkDropoutStrategy'),
+                                'module_path': 'qlib.contrib.strategy.signal_strategy',
+                                'kwargs': strategy_input.get('strategy_params', {}) or {},
+                                '_strategy_instance': _strat_obj,
+                            }
                     else:
                         strategy_config = {
                             'class': 'TopkDropoutStrategy',
@@ -872,13 +952,29 @@ class QlibBacktestNode(QlibCoreBaseNode):
             )
 
             if backtest_result is not None:
+                # run_backtest 返回 (原始结果, metrics) 二元组；
+                # metrics 是年化/回撤/夏普等可直接展示的绩效指标。
+                metrics = None
+                raw_result = backtest_result
+                if (isinstance(backtest_result, tuple) and len(backtest_result) == 2
+                        and isinstance(backtest_result[1], dict)):
+                    raw_result, metrics = backtest_result
+
                 self._execution_result = {
                     'status': 'success',
-                    'backtest_result': backtest_result,
+                    'backtest_result': raw_result,
+                    'metrics': metrics,
                     'backtest_config': backtest_config
                 }
                 self.set_output('backtest_results', self._execution_result)
-                logger.info("✅ 成功运行Qlib回测")
+                if metrics:
+                    logger.info(
+                        "✅ 成功运行Qlib回测 | 年化收益 %.2f%% | 最大回撤 %.2f%% | 夏普 %.2f",
+                        metrics.get('annualized_return', 0) * 100,
+                        metrics.get('max_drawdown', 0) * 100,
+                        metrics.get('sharpe', 0))
+                else:
+                    logger.info("✅ 成功运行Qlib回测")
                 return True
             else:
                 self._execution_result = {

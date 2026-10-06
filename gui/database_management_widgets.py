@@ -25,6 +25,46 @@ except ImportError as e:
     DATABASE_MODULES_AVAILABLE = False
     print(f"数据库模块导入失败: {e}")
 
+    # ------------------------------------------------------------
+    # 降级占位：数据库后端不可用时，仍然要能让本模块**被导入成功**。
+    #
+    # 原来只设了个 flag，但下面 class 的方法签名/函数体里直接引用了
+    # DatabaseConnection / DatabaseType，Python 在**类定义时**就会求值
+    # 默认参数注解并抛 NameError；而 NameError 不属于 ImportError，
+    # 不会被上面的 except 捕获 —— 结果整个 GUI 起不来。
+    # 这里补一组最小可用占位，保证界面能打开，相关功能点再报错提示。
+    # ------------------------------------------------------------
+    from dataclasses import dataclass as _dataclass
+    from enum import Enum as _Enum
+
+    class DatabaseType(_Enum):
+        SQLITE = "sqlite"
+        MYSQL = "mysql"
+        POSTGRESQL = "postgresql"
+        OTHER = "other"
+
+    @_dataclass
+    class DatabaseConnection:  # type: ignore[no-redef]
+        name: str = ""
+        db_type: "DatabaseType" = DatabaseType.SQLITE
+        host: str = ""
+        port: int = 0
+        database: str = ""
+        username: str = ""
+        password: str = ""
+
+    class RockXQlibDatabaseManager:  # type: ignore[no-redef]
+        def __init__(self, *a, **k):
+            raise RuntimeError("数据库后端模块不可用（core.database_manager 导入失败）")
+
+    class RockXQlibAISQLGenerator:  # type: ignore[no-redef]
+        def __init__(self, *a, **k):
+            raise RuntimeError("AI SQL 生成模块不可用（core.ai_sql_generator 导入失败）")
+
+    class RockXQlibDatabaseConnectionManager:  # type: ignore[no-redef]
+        def __init__(self, *a, **k):
+            raise RuntimeError("数据库连接管理模块不可用（core.database_connection_manager 导入失败）")
+
 logger = logging.getLogger(__name__)
 
 class DatabaseConnectionDialog(QDialog):

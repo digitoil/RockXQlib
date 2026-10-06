@@ -16,26 +16,29 @@ from typing import Dict, Any, Optional, List, Union
 # 添加路径
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+# NodeGraphQt 是硬依赖，必须显式失败；其余为可选组件，各自独立降级。
+# 原实现把它们放在同一个 try 里，任一失败就把 BaseNode 换成空壳占位类，
+# 导致节点失去 add_input/add_output 等全部端口 API。
+from NodeGraphQt import BaseNode
+NODEGRAPH_AVAILABLE = True
+
 try:
     from core.qlib_core_integration import qlib_core
+except ImportError as e:
+    print(f"qlib_core 不可用: {e}")
+    qlib_core = None
+
+try:
     from visualization.kline_viewer import RockXQlibKlineViewer
     from visualization.backtest_visualizer import RockXQlibBacktestVisualizer
     from visualization.chart_engine import RockXQlibChartEngine
     from visualization.dashboard import RockXQlibDashboard
-    from NodeGraphQt import BaseNode
-    NODEGRAPH_AVAILABLE = True
 except ImportError as e:
-    print(f"导入失败: {e}")
-    # 创建占位符
-    class BaseNode:
-        def __init__(self):
-            pass
-    qlib_core = None
+    print(f"可视化组件不可用，相关节点将降级: {e}")
     RockXQlibKlineViewer = None
     RockXQlibBacktestVisualizer = None
     RockXQlibChartEngine = None
     RockXQlibDashboard = None
-    NODEGRAPH_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -300,8 +303,10 @@ class QlibChartEngineNode(QlibCoreBaseNode):
         self.add_text_input('y_axis', 'Y轴', 'value')
         self.add_text_input('color_scheme', '配色方案', 'default')
         self.add_text_input('output_format', '输出格式', 'html')
-        self.add_text_input('width', '宽度', '800')
-        self.add_text_input('height', '高度', '600')
+        # 注意：'width' / 'height' 是 NodeGraphQt 的保留属性（控制节点视觉尺寸），
+        # 用作自定义属性会抛 NodePropertyError，故加 chart_ 前缀
+        self.add_text_input('chart_width', '宽度', '800')
+        self.add_text_input('chart_height', '高度', '600')
     
     def execute(self) -> bool:
         """执行图表引擎"""
@@ -317,8 +322,8 @@ class QlibChartEngineNode(QlibCoreBaseNode):
             y_axis = self.get_property('y_axis')
             color_scheme = self.get_property('color_scheme')
             output_format = self.get_property('output_format')
-            width = int(self.get_property('width'))
-            height = int(self.get_property('height'))
+            width = int(self.get_property('chart_width'))
+            height = int(self.get_property('chart_height'))
             
             # 使用图表引擎
             if RockXQlibChartEngine:
