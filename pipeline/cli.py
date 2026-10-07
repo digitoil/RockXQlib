@@ -10,6 +10,7 @@
     python -m pipeline generate "用 CSI500 训练 LGB，2019 年起回测"   # LLM 起草
     python -m pipeline accept pipelines/drafts/x.json
     python -m pipeline export x.yaml out.json     # 导出给 GUI 画布导入
+    python -m pipeline llm-check                  # 检测 LLM 端点是否可用
 """
 from __future__ import annotations
 
@@ -82,6 +83,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("accept", help="确认草稿，转入 pipelines/")
     p.add_argument("draft")
+
+    p = sub.add_parser("llm-check",
+                       help="检测 LLM 端点可用性（列出可用模型与本机已有模型）")
+    p.add_argument("--base-url", default="",
+                   help="留空则自动探测环境变量与常见本地端点")
+    p.add_argument("--api-key", default=os.environ.get("LLM_API_KEY", ""))
+    p.add_argument("--timeout", type=float, default=4.0)
     return ap
 
 
@@ -95,6 +103,13 @@ def _prepare_or_exit(path: str, sets: List[str]):
             print("  ✗", e)
         sys.exit(2)
     return wf
+
+
+def _llm_report(base_url: str = "", api_key: str = "", timeout: float = 4.0) -> str:
+    """探测 LLM 端点并渲染成报告（CLI 与 generate 的失败提示共用）。"""
+    from .llm_probe import diagnose, format_report
+    primary, allr = diagnose(base_url or None, api_key, timeout)
+    return format_report(primary, allr)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -160,7 +175,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.cmd == "generate":
         from .llm import generate_pipeline, openai_compatible_chat, save_draft
         if not args.model:
-            print("请用 --model 或环境变量 LLM_MODEL 指定模型（Ollama 需先启动服务并拉取模型）")
+            # 不只说"请指定模型"，直接把当前端点的真实状况和可用模型列出来
+            print("未指定模型（--model 或环境变量 LLM_MODEL）。先看一下端点情况：\n")
+            print(_llm_report(args.base_url, args.api_key))
             return 1
         chat = openai_compatible_chat(args.base_url, args.model, args.api_key)
         doc, trail = generate_pipeline(args.request, chat, max_rounds=args.max_rounds)
@@ -172,6 +189,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("草稿已写入（尚未生效）:", path)
         print("预览/校验: python -m pipeline validate %s；确认: python -m pipeline accept %s"
               % (path, path))
+        return 0
+
+    if args.cmd == "llm-check":
+        print(_llm_report(args.base_url, args.api_key, args.timeout))
         return 0
 
     if args.cmd == "accept":

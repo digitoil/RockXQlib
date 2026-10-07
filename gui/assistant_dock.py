@@ -58,6 +58,10 @@ class AssistantDock(QDockWidget):
         self.key.setPlaceholderText("API Key（可空）")
         for w, s in ((self.url, 3), (self.model, 2), (self.key, 2)):
             cfg.addWidget(w, s)
+        # 一键检测：探测端点、列出可用模型、模型为空时自动填入
+        self.check_btn = QPushButton("检测")
+        self.check_btn.setToolTip("检测接口是否可用，并列出可用模型（含本机已有模型）")
+        cfg.addWidget(self.check_btn)
         lay.addLayout(cfg)
 
         self.view = QTextBrowser()
@@ -93,6 +97,7 @@ class AssistantDock(QDockWidget):
 
         self.send_btn.clicked.connect(self.send)
         self.diag_btn.clicked.connect(self.diagnose)
+        self.check_btn.clicked.connect(self.check_llm)
         self.apply_btn.clicked.connect(lambda: self.apply(run=False))
         self.run_btn.clicked.connect(lambda: self.apply(run=True))
         self.undo_btn.clicked.connect(self.undo)
@@ -123,7 +128,9 @@ class AssistantDock(QDockWidget):
 
     def _ensure_assistant(self) -> bool:
         if not self.model.text().strip():
-            self._say("系统", "请先填写模型名（Ollama 需先启动服务并拉取模型）。", color="#f28b82")
+            # 不只说"请填写模型名"——直接探测端点，告诉用户到底缺什么、有什么可用
+            self._say("系统", "还没有填模型名。先探测一下端点情况：", color="#f28b82")
+            self.check_llm()
             return False
         from pipeline.assistant import Assistant
         from pipeline.llm import openai_compatible_chat
@@ -137,6 +144,47 @@ class AssistantDock(QDockWidget):
         self._settings.setValue("base_url", self.url.text().strip())
         self._settings.setValue("model", self.model.text().strip())
         return True
+
+    # ---- 端点检测 ----
+    def check_llm(self):
+        """探测 LLM 端点：给出结论与建议，模型名为空时自动填入可用模型。
+
+        探测要走网络（可能几秒），所以放到线程里做，避免卡住界面。
+        URL/Key 在 GUI 线程里先取出来，再传给工作函数 ——
+        子线程里不碰 Qt 控件。
+        """
+        url = self.url.text().strip()
+        key = self.key.text().strip()
+        self._busy(True, "检测端点中…")
+        self.pending = None
+        self.apply_btn.setEnabled(False)
+        self.run_btn.setEnabled(False)
+        th = _TurnThread(lambda: self._probe_worker(url, key), self)
+        th.done.connect(self._on_probe_done)
+        th.failed.connect(self._on_failed)
+        th.finished.connect(lambda: setattr(self, "_thread", None))
+        self._thread = th
+        th.start()
+
+    @staticmethod
+    def _probe_worker(url: str, key: str):
+        """（子线程执行）返回 ``(ProbeResult, 报告文本)``。"""
+        from pipeline.llm_probe import diagnose, format_report
+        primary, allr = diagnose(url or None, key, 6.0)
+        return primary, format_report(primary, allr)
+
+    def _on_probe_done(self, payload):
+        self._busy(False)
+        primary, report = payload
+        self._say("系统", report, color="#e8eaed")
+        if primary.ok:
+            if not self.model.text().strip():
+                self.model.setText(primary.models[0])
+                self.status.setText("已自动填入模型：%s" % primary.models[0])
+            else:
+                self.status.setText("端点可用，共 %d 个模型" % len(primary.models))
+        else:
+            self.status.setText("端点不可用（见上方建议）")
 
     def _canvas(self) -> Dict[str, Any]:
         from core.workflow_schema import serialize_graph
@@ -173,7 +221,8 @@ class AssistantDock(QDockWidget):
 
     def _on_failed(self, err: str):
         self._busy(False)
-        self._say("系统", "调用 LLM 失败：%s\n请检查接口地址、模型名与服务是否已启动。" % err,
+        self._say("系统", "调用 LLM 失败：%s\n"
+                          "点「检测」可以确认接口是否可用、有哪些模型可选。" % err,
                   color="#f28b82")
 
     def _on_done(self, prop):

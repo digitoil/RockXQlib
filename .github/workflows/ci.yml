@@ -16,7 +16,9 @@ jobs:
       - name: 核心纯净性守门
         run: python tests/test_core_purity.py
       - name: 流水线 / 助手 / 面板 / 规格一致性测试
-        run: python -m unittest tests.test_pipeline tests.test_assistant tests.test_assistant_dock_qt tests.test_pipeline_panel_qt tests.test_specs_vs_real -v
+        run: python -m unittest tests.test_pipeline tests.test_assistant tests.test_assistant_dock_qt tests.test_assistant_probe_qt tests.test_pipeline_panel_qt tests.test_llm_probe tests.test_specs_vs_real -v
+      - name: LLM 端点探测（无服务时应给出建议而非崩溃）
+        run: python -m pipeline llm-check --timeout 2 || true
       - name: 模板演练（接线与数据流）
         run: |
           for f in pipelines/*.yaml; do python -m pipeline run "$f" --backend dry --runs-dir /tmp/runs; done
