@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """RockXQlib 节点图工作流执行器（面向 NodeGraphQt 真实端口数据流）。
 
-## 为什么需要这个模块（与 core/workflow_engine.py 的区别）
+## 为什么需要这个模块
 
 项目里原本有两个"工作流引擎"，各管一段，但都没真正接上 GUI：
 
@@ -21,6 +21,8 @@
    两者不兼容 —— 直接调 ``execute(inputs)`` 会
    ``TypeError: execute() takes 1 positional argument but 2 were given``。
    所以那个引擎从未真正跑起来过。
+   ⚠️ 该文件已于 2026-10-07 作为死代码删除（零引用）；
+   保留这段说明是为了让后人知道**为什么**不能回头用"两套引擎"的思路。
 
 2. ``launch_gui_complete_integration.py`` 里的 ``WorkflowExecutionThread``
    —— 能跑真实节点，但顺序靠硬编码的 ``node.id == 'qlib_init'`` 判断

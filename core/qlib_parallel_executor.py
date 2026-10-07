@@ -3,21 +3,34 @@
 """
 Qlib并行执行器
 严格按照设计文档实现
+
+⚠️ 本模块只被 ``nodes/core_integration_nodes.py`` 使用，而那个节点系统
+默认是**关闭**的（config/node_fusion_config.yaml 里 core_integration=false）。
+
+原本这里有 ``from .qlib_workflow import QlibWorkflow``，但 ``qlib_workflow``
+已作为死代码删除（2026-10-07），导致本模块导入即
+``ModuleNotFoundError: No module named 'core.qlib_workflow'``。
+``QlibWorkflow`` 在本文件里**只用于类型标注**，所以改为：
+- 启用延迟求值注解（``from __future__ import annotations``）
+- 用 ``TYPE_CHECKING`` 守卫导入，运行时不再需要该模块
 """
+from __future__ import annotations
 
 import os
 import sys
 import logging
 import time
 import threading
-from typing import Dict, Any, Optional, List, Tuple, Callable, Set
+from typing import TYPE_CHECKING, Dict, Any, Optional, List, Tuple, Callable, Set
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed, Future
 import multiprocessing as mp
 import pandas as pd
 import numpy as np
 
 from .qlib_base_node import QlibBaseNode
-from .qlib_workflow import QlibWorkflow
+
+if TYPE_CHECKING:                     # 仅类型检查期需要，运行时不导入
+    from .qlib_workflow import QlibWorkflow
 
 logger = logging.getLogger(__name__)
 

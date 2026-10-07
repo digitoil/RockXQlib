@@ -121,8 +121,10 @@ os.environ['SETUPTOOLS_SCM_PRETEND_VERSION'] = '1.0.0'
 os.environ['SETUPTOOLS_SCM_PRETEND_VERSION_FOR_ROCKXQLIB'] = '1.0.0'
 
 from core.qlib_base_node import QlibBaseNode
-from core.qlib_workflow import QlibWorkflow
+from core.qlib_base_node import QlibBaseNode
 from core.qlib_core_integration import QlibCoreIntegration
+from core.workflow_runner import NodeGraphWorkflowRunner
+from core.workflow_schema import serialize_graph, deserialize_graph
 print('✅ 所有核心模块导入成功')
 "
 ```
@@ -132,27 +134,37 @@ print('✅ 所有核心模块导入成功')
 ### 1. 基本使用
 
 #### 创建工作流
+
+当前推荐两种方式（旧的 `QlibWorkflow` 手写 API 已随死代码移除）：
+
+**方式一：用模板（最省事）**
+```bash
+python -m pipeline new my_strategy --template lgb_alpha158   # 从模板生成
+python -m pipeline run pipelines/my_strategy.yaml --backend dry   # 演练接线
+```
+
+**方式二：代码里构造（适合脚本化）**
 ```python
-from core.qlib_workflow import QlibWorkflow
-from nodes.data_nodes import QlibAlphaNode
-from nodes.model_nodes import QlibLinearNode
+from core.workflow_schema import deserialize_graph
+from pipeline.backends import make_graph
 
-# 创建工作流
-workflow = QlibWorkflow("我的第一个工作流")
+# steps 按数据流顺序排列；同名端口会自动连线
+wf = {"name": "demo", "steps": [
+    {"type": "init"},
+    {"type": "data", "props": {"instruments": "csi300"}},
+    {"type": "dataset"},
+    {"type": "model", "props": {"model_class": "LGBModel"}},
+    {"type": "strategy"},
+    {"type": "backtest"},
+]}
 
-# 添加节点
-alpha_node = QlibAlphaNode()
-model_node = QlibLinearNode()
+graph, specs = make_graph("dry")      # dry=不依赖 Qt/qlib，便于接线验证
+ok, errs = deserialize_graph(wf, graph)
+print("接线成功" if ok else errs)
+```
 
-alpha_id = workflow.add_node(alpha_node)
-model_id = workflow.add_node(model_node)
-
-# 连接节点
-workflow.connect_nodes(alpha_id, model_id, "alpha_data", "train_data")
-
-# 验证和执行
-if workflow.validate_workflow():
-    print("工作流验证通过")
+**在 GUI 里**：拖节点连线 → 属性编辑器改参数 → 工具栏「▶ 一键运行」。
+节点类型、端口名与可填属性用 `python -m pipeline nodes` 查看。
 ```
 
 #### 运行实验
@@ -175,8 +187,8 @@ exp_manager.end_run(run_id)
 
 #### 启动图形界面
 ```bash
-# 运行图形界面
-python run_gui.py
+# 运行图形界面（项目根目录的启动器）
+start_rockxqlib.bat
 ```
 
 #### 图形界面功能
@@ -469,8 +481,8 @@ RUN pip install -r requirements.txt
 ENV SETUPTOOLS_SCM_PRETEND_VERSION=1.0.0
 ENV SETUPTOOLS_SCM_PRETEND_VERSION_FOR_ROCKXQLIB=1.0.0
 
-# 运行应用
-CMD ["python", "run_gui.py"]
+# 运行应用（GUI 主入口）
+CMD ["python", "launch_gui_complete_integration.py"]
 ```
 
 #### 构建和运行
@@ -581,10 +593,11 @@ print("已注册节点数:", len(manager.registry.get_all_nodes()))
 #### 查看文档
 ```bash
 # 查看帮助
-python -m core.qlib_workflow --help
+# 查看流水线命令帮助
+python -m pipeline --help
 
-# 查看节点列表
-python -c "from nodes.data_nodes import *; print([cls.__name__ for cls in [QlibAlphaNode, QlibHighFreqNode]])"
+# 查看节点列表（含端口与可填属性）
+python -m pipeline nodes
 ```
 
 #### 运行示例

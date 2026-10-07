@@ -24,6 +24,12 @@ RockXQlib 核心包
 用法完全不变（`from core import RockXQlibAIModelInterface` 照样可用），
 但只在真正访问该名字时才加载对应模块。
 
+⚠️ 已移除的死代码（零引用，2026-10-07 清理）：
+    plugin_system.py（插件系统，从未接线）
+    workflow_engine.py（旧工作流引擎，节点契约与真实节点不兼容，从未跑通）
+    qlib_workflow.py / qlib_node_editor.py（同上）
+    现役执行器是 workflow_runner.py。
+
 新增扩展请放到 extensions/ 目录，不要往本文件加导入语句。
 守门测试：tests/test_core_purity.py
 ============================================================
@@ -40,9 +46,6 @@ __all__ = [
     'RockXQlibEventSystem',
     'RockXQlibAIModelInterface',
     'RockXQlibKnowledgeBase',
-    'RockXQlibPluginManager',
-    'RockXQlibPlugin',
-    'RockXQlibWorkflowEngine',
 ]
 
 # 扩展组件映射：导出名 -> (相对模块名, 模块内属性名)
@@ -54,9 +57,6 @@ _LAZY_ATTRS = {
     'RockXQlibEventSystem': ('.message_system', 'RockXQlibEventSystem'),
     'RockXQlibAIModelInterface': ('.ai_integration', 'RockXQlibAIModelInterface'),
     'RockXQlibKnowledgeBase': ('.ai_integration', 'RockXQlibKnowledgeBase'),
-    'RockXQlibPluginManager': ('.plugin_system', 'RockXQlibPluginManager'),
-    'RockXQlibPlugin': ('.plugin_system', 'RockXQlibPlugin'),
-    'RockXQlibWorkflowEngine': ('.workflow_engine', 'RockXQlibWorkflowEngine'),
 }
 
 
