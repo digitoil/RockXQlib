@@ -1,0 +1,66 @@
+# TFT · Alpha158
+# 由 qlib 官方基准配置自动导入，**模型超参与官方一致**（可与论文结果比对）
+# 源文件: qlib 官方基准: examples/benchmarks/TFT/workflow_config_tft_Alpha158.yaml
+#
+# 运行:      python -m pipeline run pipelines/qlib_tft_alpha158.yaml --backend dry   # 先演练接线
+#            python -m pipeline run pipelines/qlib_tft_alpha158.yaml                # 真跑（需本机有数据）
+# 导入画布:  GUI「文件 → 导入工作流(JSON)」或 python -m pipeline export pipelines/qlib_tft_alpha158.yaml out.json
+#
+# 生成命令:  python -m pipeline import-benchmarks
+#
+# 注意:
+#   - provider_uri 已替换为本机数据目录：E:\2025\RockX20251003\RockXFWV21\qlib_data\cn_data
+#   - 官方配置里这些顶层键未映射（本工具不使用）：sys
+
+name: qlib_tft_alpha158
+steps:
+- type: init
+  props:
+    provider_uri: E:\2025\RockX20251003\RockXFWV21\qlib_data\cn_data
+    region: cn
+- type: data
+  props:
+    instruments: csi300
+    start_time: '2008-01-01'
+    end_time: '2020-08-01'
+- type: dataset
+  props:
+    handler_class: Alpha158
+    module_path: qlib.contrib.data.handler
+    instruments: csi300
+    handler_kwargs:
+      start_time: '2008-01-01'
+      end_time: '2020-08-01'
+      fit_start_time: '2008-01-01'
+      fit_end_time: '2014-12-31'
+      instruments: csi300
+    train_start: '2008-01-01'
+    train_end: '2014-12-31'
+    valid_start: '2015-01-01'
+    valid_end: '2016-12-31'
+    test_start: '2017-01-01'
+    test_end: '2020-08-01'
+- type: model
+  props:
+    model_class: TFTModel
+    module_path: tft
+- type: strategy
+  props:
+    strategy_class: TopkDropoutStrategy
+    module_path: qlib.contrib.strategy
+    signal: <PRED>
+    strategy_params:
+      topk: 50
+      n_drop: 5
+- type: backtest
+  props:
+    start_time: '2017-01-01'
+    end_time: '2020-08-01'
+    initial_capital: 100000000
+    benchmark: SH000300
+    exchange_kwargs:
+      limit_threshold: 0.095
+      deal_price: close
+      open_cost: 0.0005
+      close_cost: 0.0015
+      min_cost: 5

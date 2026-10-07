@@ -1,0 +1,99 @@
+# DoubleEnsemble · Alpha158 · csi500
+# 由 qlib 官方基准配置自动导入，**模型超参与官方一致**（可与论文结果比对）
+# 源文件: qlib 官方基准: examples/benchmarks/DoubleEnsemble/workflow_config_doubleensemble_Alpha158_csi500.yaml
+#
+# 运行:      python -m pipeline run pipelines/qlib_doubleensemble_alpha158_csi500.yaml --backend dry   # 先演练接线
+#            python -m pipeline run pipelines/qlib_doubleensemble_alpha158_csi500.yaml                # 真跑（需本机有数据）
+# 导入画布:  GUI「文件 → 导入工作流(JSON)」或 python -m pipeline export pipelines/qlib_doubleensemble_alpha158_csi500.yaml out.json
+#
+# 生成命令:  python -m pipeline import-benchmarks
+#
+# 注意:
+#   - provider_uri 已替换为本机数据目录：E:\2025\RockX20251003\RockXFWV21\qlib_data\cn_data
+
+name: qlib_doubleensemble_alpha158_csi500
+steps:
+- type: init
+  props:
+    provider_uri: E:\2025\RockX20251003\RockXFWV21\qlib_data\cn_data
+    region: cn
+- type: data
+  props:
+    instruments: csi500
+    start_time: '2008-01-01'
+    end_time: '2020-08-01'
+- type: dataset
+  props:
+    handler_class: Alpha158
+    module_path: qlib.contrib.data.handler
+    instruments: csi500
+    handler_kwargs:
+      start_time: '2008-01-01'
+      end_time: '2020-08-01'
+      fit_start_time: '2008-01-01'
+      fit_end_time: '2014-12-31'
+      instruments: csi500
+    train_start: '2008-01-01'
+    train_end: '2014-12-31'
+    valid_start: '2015-01-01'
+    valid_end: '2016-12-31'
+    test_start: '2017-01-01'
+    test_end: '2020-08-01'
+- type: model
+  props:
+    model_class: DEnsembleModel
+    module_path: qlib.contrib.model.double_ensemble
+    model_params:
+      base_model: gbm
+      loss: mse
+      num_models: 6
+      enable_sr: true
+      enable_fs: true
+      alpha1: 1
+      alpha2: 1
+      bins_sr: 10
+      bins_fs: 5
+      decay: 0.5
+      sample_ratios:
+      - 0.8
+      - 0.7
+      - 0.6
+      - 0.5
+      - 0.4
+      sub_weights:
+      - 1
+      - 0.2
+      - 0.2
+      - 0.2
+      - 0.2
+      - 0.2
+      epochs: 28
+      colsample_bytree: 0.8879
+      learning_rate: 0.2
+      subsample: 0.8789
+      lambda_l1: 205.6999
+      lambda_l2: 580.9768
+      max_depth: 8
+      num_leaves: 210
+      num_threads: 20
+      verbosity: -1
+- type: strategy
+  props:
+    strategy_class: TopkDropoutStrategy
+    module_path: qlib.contrib.strategy
+    signal: <PRED>
+    strategy_params:
+      topk: 50
+      n_drop: 5
+- type: backtest
+  props:
+    start_time: '2017-01-01'
+    end_time: '2020-08-01'
+    initial_capital: 100000000
+    benchmark: SH000905
+    exchange_kwargs:
+      limit_threshold: 0.095
+      deal_price: close
+      open_cost: 0.0005
+      close_cost: 0.0015
+      min_cost: 5

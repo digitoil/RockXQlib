@@ -90,6 +90,15 @@ def build_parser() -> argparse.ArgumentParser:
                    help="留空则自动探测环境变量与常见本地端点")
     p.add_argument("--api-key", default=os.environ.get("LLM_API_KEY", ""))
     p.add_argument("--timeout", type=float, default=4.0)
+
+    p = sub.add_parser("import-benchmarks",
+                       help="把 qlib 官方基准配置导入为流水线模板（examples/benchmarks）")
+    p.add_argument("--list", action="store_true", help="只列出可导入的基准，不写文件")
+    p.add_argument("--limit", type=int, default=0, help="最多导入几个（0=全部）")
+    p.add_argument("--overwrite", action="store_true", help="覆盖已存在的模板")
+    p.add_argument("--provider-uri", default="",
+                   help="数据目录；留空则自动探测本机真实目录")
+    p.add_argument("--out-dir", default="", help="输出目录，默认 pipelines/")
     return ap
 
 
@@ -193,6 +202,38 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.cmd == "llm-check":
         print(_llm_report(args.base_url, args.api_key, args.timeout))
+        return 0
+
+    if args.cmd == "import-benchmarks":
+        from .qlib_benchmarks import discover, import_all
+
+        bms = discover()
+        if not bms:
+            print("未找到 qlib 官方基准配置（examples/benchmarks 不存在或为空）。")
+            print("官方配置随 qlib 仓库分发；本工具只做格式转换，不联网下载。")
+            return 1
+        if args.list:
+            models = sorted({b.model for b in bms if b.model})
+            print("可导入的 qlib 官方基准：%d 个（覆盖 %d 个模型）\n"
+                  % (len(bms), len(models)))
+            for bm in bms:
+                print("  %-44s %-18s %s" % (bm.slug, bm.model or "?", bm.handler))
+            print("\n模型: %s" % ", ".join(models))
+            print("\n导入: python -m pipeline import-benchmarks [--limit N] [--overwrite]")
+            return 0
+
+        out_dir = Path(args.out_dir) if args.out_dir else None
+        made = import_all(out_dir=out_dir,
+                          provider_uri=args.provider_uri or None,
+                          overwrite=args.overwrite,
+                          limit=args.limit or None)
+        new = [p for _bm, p in made if p.exists()]
+        print("已处理 %d 个基准配置 → %s" % (len(made), out_dir or "pipelines/"))
+        print("提示：已有模板默认跳过，加 --overwrite 可覆盖。")
+        print("\n下一步：")
+        print("  python -m pipeline validate %s        # 校验其中一个" % new[0])
+        print("  python -m pipeline run %s --backend dry" % new[0])
+        print("  GUI「工作流 → 从模板新建…」也能直接选用")
         return 0
 
     if args.cmd == "accept":
