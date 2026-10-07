@@ -19,6 +19,52 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 logger = logging.getLogger(__name__)
 
+# 交易所参数缺省值（与 qlib 官方基准 LightGBM 配置一致）。
+# 之前这几个值是**写死**在回测节点里的，用户改不了；现在改为
+# 「节点属性 exchange_kwargs 优先，缺省用这里的值」。
+_DEFAULT_EXCHANGE_KWARGS = {
+    "freq": "day",
+    "limit_threshold": 0.095,
+    "deal_price": "close",
+    "open_cost": 0.0005,
+    "close_cost": 0.0015,
+    "min_cost": 5,
+}
+
+
+def _as_json_dict(value, default=None):
+    """把节点属性（文本/JSON 字符串/dict）统一转成 dict。
+
+    节点属性用 ``add_text_input`` 声明时存的是**字符串**，而使用方要的是
+    dict。原先各处写法不一（有的直接 ``or {}``，于是拿到字符串后
+    ``.get()`` 会炸；有的手写 json.loads）。这里统一收口。
+
+    解析失败或为空时返回 ``default``（默认 ``{}``）—— 不抛异常，
+    免得一个手写错的 JSON 把整条链路带崩。
+    """
+    if isinstance(value, dict):
+        return dict(value)
+    if not value:
+        return dict(default) if default else {}
+    if isinstance(value, str):
+        text = value.strip()
+        if not text or text == "{}":
+            return dict(default) if default else {}
+        try:
+            import json as _json
+            obj = _json.loads(text)
+            return dict(obj) if isinstance(obj, dict) else (dict(default) if default else {})
+        except Exception:
+            return dict(default) if default else {}
+    return dict(default) if default else {}
+
+
+def _exchange_kwargs(node) -> dict:
+    """交易所参数：节点属性优先，缺省用官方基准默认值。"""
+    d = dict(_DEFAULT_EXCHANGE_KWARGS)
+    d.update(_as_json_dict(node.get_property("exchange_kwargs")))
+    return d
+
 # ---------------------------------------------------------------------------
 # 导入策略：NodeGraphQt 是硬依赖（拿不到就建不出节点），必须显式失败。
 # 原先把 qlib_core 与 BaseNode 放在同一个 try 里，任一导入失败就把 BaseNode
@@ -273,6 +319,15 @@ class QlibDatasetNode(QlibCoreBaseNode):
 
         # 添加属性
         self.add_text_input('handler_class', '处理器类', 'Alpha158')
+        # ⚠️ 下面三个原先**没有声明**，但 execute() 里一直在读 ——
+        # 导致「完整 handler 配置」那条分支永远走不到（get_property 返回 None），
+        # 导入 qlib 官方基准配置时也会因"属性不存在"校验失败。
+        self.add_text_input('module_path', '处理器模块路径', 'qlib.contrib.data.handler')
+        self.add_text_input('handler_kwargs', '处理器参数(JSON)',
+                            '{"start_time": "2008-01-01", "end_time": "2020-08-01", '
+                            '"fit_start_time": "2008-01-01", "fit_end_time": "2014-12-31", '
+                            '"instruments": "csi300"}')
+        self.add_text_input('segments', '区间覆盖(JSON)', '{}')
         self.add_text_input('instruments', '股票池', 'csi300')
         self.add_text_input('train_start', '训练开始', '2008-01-01')
         self.add_text_input('train_end', '训练结束', '2014-12-31')
@@ -328,7 +383,7 @@ class QlibDatasetNode(QlibCoreBaseNode):
                     logger.error("未取到有效的 provider_uri，请检查「Qlib初始化」节点的数据源URI设置")
 
             # 检查是否有TSDatasetH配置
-            handler_kwargs = self.get_property('handler_kwargs')
+            handler_kwargs = _as_json_dict(self.get_property('handler_kwargs'))
             if handler_kwargs:
                 # 使用TSDatasetH配置
                 handler_class = self.get_property('handler_class') or 'Alpha158'
@@ -338,7 +393,7 @@ class QlibDatasetNode(QlibCoreBaseNode):
                     'module_path': module_path,
                     'kwargs': handler_kwargs
                 }
-                segments = self.get_property('segments') or {}
+                segments = _as_json_dict(self.get_property('segments'))
                 if not segments:
                     segments = {
                         'train': [self.get_property('train_start'), self.get_property('train_end')],
@@ -521,6 +576,10 @@ class QlibModelNode(QlibCoreBaseNode):
         # 添加属性
         self.add_text_input('model_class', '模型类', 'LGBModel')
         self.add_text_input('model_params', '模型参数', '{}')
+        # ⚠️ 这两个原先未声明但被 execute() 读取（同上：分支不可达）。
+        # 填了 module_path 就走「完整配置」路径，模型参数用 model_kwargs。
+        self.add_text_input('module_path', '模型模块路径', '')
+        self.add_text_input('model_kwargs', '模型参数(完整配置, JSON)', '{}')
 
     def execute(self) -> bool:
         """执行模型创建和训练"""
@@ -541,7 +600,7 @@ class QlibModelNode(QlibCoreBaseNode):
                 model_config = {
                     'class': model_class,
                     'module_path': module_path,
-                    'kwargs': self.get_property('model_kwargs') or {}
+                    'kwargs': _as_json_dict(self.get_property('model_kwargs'))
                 }
             else:
                 # 使用简化的模型配置
@@ -856,6 +915,10 @@ class QlibBacktestNode(QlibCoreBaseNode):
         self.add_text_input('initial_capital', '初始资金', '1000000')
         self.add_text_input('benchmark', '基准', 'SH000300')
         self.add_text_input('strategy_config', '策略配置', '{}')
+        # 交易所参数（费率/涨跌停/成交价）。原先这几个值是**硬编码**的，
+        # 用户无法调整 —— 但 qlib 官方各基准用的费率并不完全相同，
+        # 要复现论文结果就得能改。留空则用官方基准默认值。
+        self.add_text_input('exchange_kwargs', '交易所参数(JSON)', '{}')
 
     def execute(self) -> bool:
         """执行回测"""
@@ -920,14 +983,7 @@ class QlibBacktestNode(QlibCoreBaseNode):
                     'end_time': self.get_property('end_time'),
                     'account': int(self.get_property('initial_capital')),
                     'benchmark': self.get_property('benchmark'),
-                    'exchange_kwargs': {
-                        'freq': 'day',
-                        'limit_threshold': 0.095,
-                        'deal_price': 'close',
-                        'open_cost': 0.0005,
-                        'close_cost': 0.0015,
-                        'min_cost': 5
-                    }
+                    'exchange_kwargs': _exchange_kwargs(self)
                 }
 
                 # 构建修复后的回测配置
@@ -942,14 +998,7 @@ class QlibBacktestNode(QlibCoreBaseNode):
                     'end_time': self.get_property('end_time'),
                     'account': int(self.get_property('initial_capital')),
                     'benchmark': self.get_property('benchmark'),
-                    'exchange_kwargs': {
-                        'freq': 'day',
-                        'limit_threshold': 0.095,
-                        'deal_price': 'close',
-                        'open_cost': 0.0005,
-                        'close_cost': 0.0015,
-                        'min_cost': 5
-                    }
+                    'exchange_kwargs': _exchange_kwargs(self)
                 }
 
             # 使用Qlib核心运行回测
