@@ -140,9 +140,31 @@ class TurnTest(unittest.TestCase):
 
     def test_run_flag_is_only_a_suggestion(self):
         cv = canvas()
-        a = Assistant(Scripted(reply("跑吧", modified(cv, model_class="X"), run=True)), SPECS)
+        a = Assistant(Scripted(reply("跑吧", modified(cv, model_class="XGBModel"), run=True)),
+                      SPECS)
         p = a.turn("改完就跑", cv)
         self.assertTrue(p.run_suggested)   # 仅建议；真正执行由界面确认
+
+    def test_unknown_model_class_is_repaired(self):
+        """类名不在注册表里 -> 提案被拒并回喂错误让 LLM 改（而不是放过）。"""
+        cv = canvas()
+        bad = modified(cv, model_class="Transformer")   # 正确写法是 TransformerModel
+        llm = Scripted(reply("换模型", bad),
+                       reply("已修正", modified(cv, model_class="TransformerModel")))
+        p = Assistant(llm, SPECS).turn("用 Transformer", cv)
+        self.assertIsNotNone(p.workflow)
+        self.assertIn("Transformer", llm.calls[1][-1]["content"])   # 错误被喂回
+
+    def test_missing_required_hyperparam_is_repaired(self):
+        """TRAModel 漏了必填超参 -> 也该在提案阶段被拦下。"""
+        cv = canvas()
+        bad = modified(cv, model_class="TRAModel",
+                       module_path="qlib.contrib.model.pytorch_tra",
+                       model_params="{}")
+        llm = Scripted(reply("上 TRA", bad),
+                       reply("补上", modified(cv, model_class="LGBModel")))
+        Assistant(llm, SPECS).turn("用 TRA", cv)
+        self.assertIn("tra_config", llm.calls[1][-1]["content"])
 
     def test_history_is_bounded(self):
         a = Assistant(Scripted(*[reply("ok")] * 30), SPECS)

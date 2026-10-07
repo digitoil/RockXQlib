@@ -42,12 +42,19 @@ SYSTEM = """你是 qlib 量化建模助手，用户在图形画布上拖拽搭�
   已有节点必须沿用原 id；新增节点用未占用的 id（如 n7）。props 只写需要的键，键必须来自节点说明书。
 - 日期 YYYY-MM-DD；训练/验证/测试区间必须依次递增且不重叠（否则前视泄漏）。
 - model_params 等写成 JSON 对象。
+- 模型/策略的**类名只能从下面「可选模型 / 可选策略」清单里选**，不要凭印象编
+  （例如写 `Transformer` 是错的，正确是 `TransformerModel`）。
+  同名类（如 LSTM / GRU / TCN 同时存在于两个模块）必须同时给出 module_path，
+  否则会取到另一个模块的类；`_ts` 结尾的模块是时间序列变体，需要 TSDatasetH。
+  超参名优先照抄官方基准（清单里已标注），写错的参数在有 **kwargs 的类上会被静默忽略。
 - 用户明确要求运行、且工作流已就绪时 run 才填 true；这只是建议，用户会再确认。
 - 不要编造回测结果或指标；只能引用下面「上次运行结果」里真实出现的数字。
 - 看不懂需求或缺关键信息时，在 reply 里问一个具体问题，workflow 填 null。
 
 节点说明书（类型 / 输入端口 / 输出端口 / 属性及默认值）：
 {schema}
+
+{catalog}
 """
 
 
@@ -144,10 +151,24 @@ class Proposal:
 class Assistant:
     """一个对话会话。保存历史；每轮传入最新画布与运行结果。"""
 
-    def __init__(self, chat: Chat, specs: Optional[Dict[str, Dict[str, Any]]] = None):
+    def __init__(self, chat: Chat, specs: Optional[Dict[str, Dict[str, Any]]] = None,
+                 catalog: Optional[str] = None):
         self.chat = chat
         self.specs = specs or extract_specs()
         self.history: List[Dict[str, str]] = []
+        # 模型 / 策略清单：不给的话 LLM 会凭印象编类名（如 "Transformer" 而
+        # 实际叫 "TransformerModel"），提案必然校验失败。延迟到真正要用时再扫。
+        self._catalog = catalog
+
+    @property
+    def catalog(self) -> str:
+        if self._catalog is None:
+            try:
+                from .registry import catalog_text
+                self._catalog = catalog_text()
+            except Exception:
+                self._catalog = "（模型/策略注册表不可用）"
+        return self._catalog
 
     def reset(self) -> None:
         self.history.clear()
@@ -160,7 +181,9 @@ class Assistant:
             else "（画布是空的）",
             summarize_run(last_run), user_text))
         hist = self.history[-2 * MAX_HISTORY_TURNS:]
-        return ([{"role": "system", "content": SYSTEM.format(schema=schema_text(self.specs))}]
+        return ([{"role": "system",
+                  "content": SYSTEM.format(schema=schema_text(self.specs),
+                                           catalog=self.catalog)}]
                 + hist + [{"role": "user", "content": ctx}])
 
     @staticmethod

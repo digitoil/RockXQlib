@@ -2,21 +2,46 @@
 """语义检查：结构合法但参数不合理的流水线（结构校验抓不到的那类）。
 
 只做**确定错误**与**高概率错误**，不做风格建议：
-- 错误：JSON 文本属性解析失败、日期格式非法、区间起止颠倒、训练/验证/测试区间重叠
-- 警告：回测区间超出测试区间、基准与股票池看起来不匹配
+- 错误：JSON 文本属性解析失败、日期格式非法、区间起止颠倒、训练/验证/测试区间重叠、
+  模型/策略类名不在注册表里、module_path 与类名对不上、漏填必填超参
+- 警告：回测区间超出测试区间、基准与股票池看起来不匹配、超参名拼错、
+  同名类没填 module_path（运行时可能取到另一个模块的同名类）
 """
 from __future__ import annotations
 
 import json
 import re
 from datetime import date
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 # 属性 -> 必须是 JSON 对象文本
 _JSON_PROPS = {"model_params", "strategy_params", "strategy_kwargs",
-               "handler_kwargs", "strategy_config"}
+               "handler_kwargs", "strategy_config", "model_kwargs",
+               "exchange_kwargs"}
 _BENCH = {"csi300": "SH000300", "csi500": "SH000905", "csi100": "SH000903"}
+
+# 需要查「模型 / 策略注册表」的节点类型
+_REGISTRY_NODES = ("qlib.core.model", "qlib.core.strategy")
+
+# 关掉可省掉一次源码扫描（约 0.3 秒）；测试里用来验证「只有注册表检查能发现的问题」
+USE_REGISTRY = True
+
+
+def _registry_checks(node_type: str, props: Dict[str, Any],
+                     nid: str) -> Tuple[List[str], List[str]]:
+    """查模型 / 策略类名与超参（静态扫描，不 import qlib，避免拉起 torch）。
+
+    注册表读不到源码时（例如部署包没带 ``qlib/`` 目录）**静默跳过** ——
+    这只是锦上添花的检查，不该让整条流水线的校验失败。
+    """
+    if not USE_REGISTRY:
+        return [], []
+    try:
+        from .registry import build
+        return build().check_node(node_type, props, nid)
+    except Exception:
+        return [], []
 
 
 def _d(s: Any):
@@ -70,6 +95,12 @@ def lint_workflow(wf: Dict[str, Any], specs: Dict[str, Dict[str, Any]] = None
                 if b1 and a2 and b1 >= a2:
                     errors.append("%s: %s 区间与 %s 区间重叠或顺序颠倒（会造成前视泄漏）"
                                   % (nid, s1, s2))
+
+        # 模型 / 策略：类名是否存在、module_path 是否对得上、超参名有没有写错
+        if n["type"] in _REGISTRY_NODES:
+            rerrs, rwarns = _registry_checks(n["type"], props, nid)
+            errors += rerrs
+            warns += rwarns
 
     ds = next((n for n in nodes if n["type"] == "qlib.core.dataset"), None)
     bt = next((n for n in nodes if n["type"] == "qlib.core.backtest"), None)

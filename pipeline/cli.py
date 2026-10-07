@@ -11,6 +11,9 @@
     python -m pipeline accept pipelines/drafts/x.json
     python -m pipeline export x.yaml out.json     # 导出给 GUI 画布导入
     python -m pipeline llm-check                  # 检测 LLM 端点是否可用
+    python -m pipeline models [--class LGBModel]  # 可用模型（类名 -> module_path -> 参数）
+    python -m pipeline strategies                 # 可用策略
+    python -m pipeline autofill x.yaml            # 预览 module_path 会补成什么
 """
 from __future__ import annotations
 
@@ -99,6 +102,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--provider-uri", default="",
                    help="数据目录；留空则自动探测本机真实目录")
     p.add_argument("--out-dir", default="", help="输出目录，默认 pipelines/")
+
+    # 模型 / 策略注册表（AST 扫描 qlib 源码，不 import，因此不会拉起 torch）
+    for name, help_text in (("models", "列出可用模型（类名 / module_path / 参数）"),
+                            ("strategies", "列出可用策略（类名 / module_path / 参数）")):
+        p = sub.add_parser(name, help=help_text)
+        p.add_argument("--class", dest="klass", default="",
+                       help="查看某个类的完整签名与必填参数")
+        p.add_argument("--verified", action="store_true",
+                       help="只列官方基准验证过的组合")
+        p.add_argument("--all", dest="show_all", action="store_true",
+                       help="列出全部参数（默认只显示签名，隐藏基准白名单）")
+
+    p = sub.add_parser("autofill",
+                       help="预览「module_path 能被自动补成什么」（不改文件）")
+    p.add_argument("pipeline")
     return ap
 
 
@@ -236,9 +254,62 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("  GUI「工作流 → 从模板新建…」也能直接选用")
         return 0
 
+    if args.cmd in ("models", "strategies"):
+        return _cmd_registry(args)
+
+    if args.cmd == "autofill":
+        return _cmd_autofill(args)
+
     if args.cmd == "accept":
         from .llm import accept_draft
         _prepare_or_exit(args.draft, [])
         print("已转正:", accept_draft(Path(args.draft)))
         return 0
     return 1
+
+
+def _cmd_registry(args) -> int:
+    """``models`` / ``strategies`` 子命令。"""
+    from .registry import MODEL, STRATEGY, build
+
+    kind = MODEL if args.cmd == "models" else STRATEGY
+    reg = build()
+    if not reg.of_kind(kind):
+        print("未扫描到任何%s —— qlib 源码目录（qlib/contrib/…）不在项目里？"
+              % ("模型" if kind == MODEL else "策略"))
+        return 1
+    if args.klass:
+        print(reg.format_class(args.klass, kind))
+        return 0
+    if args.show_all:
+        print(reg.catalog(kind, only_verified=args.verified))
+    else:
+        print(reg.format_list(kind))
+    return 0
+
+
+def _cmd_autofill(args) -> int:
+    """预览 ``module_path`` 会被补成什么。
+
+    只预览不写回：能唯一确定的类名即使不补也能跑（节点会按类名反查），
+    真正需要写回的场景是「同名歧义」，而那种情况本来就补不出来、得人工决定。
+    所以这个命令的价值在**诊断**（"它到底会取哪个模块"），改文件反而容易
+    弄丢模板里的注释。GUI 里改类名时会即时补全，不需要手改。
+    """
+    from .registry import autofill_workflow, build
+    from .runner import prepare
+
+    wf, errs, _warns = prepare(args.pipeline)
+    if errs:
+        print("流水线本身没通过校验，先修好再看补全：")
+        for e in errs:
+            print("  ✗", e)
+        return 1
+    _new, changes = autofill_workflow(wf, reg=build())
+    if not changes:
+        print("没有可补的 module_path（都已经对得上，或类名有歧义需要人工决定）。")
+        return 0
+    print("以下 module_path 能按类名唯一确定（节点运行时也会这样反查，不必手改）：")
+    for c in changes:
+        print("  " + c)
+    return 0

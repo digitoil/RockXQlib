@@ -15,10 +15,16 @@ jobs:
           pip install pyyaml PySide6-Essentials NodeGraphQt
       - name: 核心纯净性守门
         run: python tests/test_core_purity.py
-      - name: 流水线 / 助手 / 面板 / 基准导入 / 规格一致性测试
-        run: python -m unittest tests.test_pipeline tests.test_assistant tests.test_assistant_dock_qt tests.test_assistant_probe_qt tests.test_pipeline_panel_qt tests.test_llm_probe tests.test_qlib_benchmarks tests.test_specs_vs_real -v
+      - name: 流水线 / 助手 / 面板 / 基准导入 / 注册表 / 规格一致性测试
+        run: python -m unittest tests.test_pipeline tests.test_assistant tests.test_assistant_dock_qt tests.test_assistant_probe_qt tests.test_pipeline_panel_qt tests.test_llm_probe tests.test_qlib_benchmarks tests.test_registry tests.test_specs_vs_real -v
       - name: LLM 端点探测（无服务时应给出建议而非崩溃）
         run: python -m pipeline llm-check --timeout 2 || true
+      - name: 模型/策略注册表（AST 扫描，不 import qlib/torch）
+        run: |
+          python -m pipeline models
+          python -m pipeline strategies
+          python -m pipeline models --class LGBModel
+          python -m pipeline strategies --class TopkDropoutStrategy
       - name: 模板校验（全部，含 qlib 官方基准导入的模板）
         run: |
           fail=0

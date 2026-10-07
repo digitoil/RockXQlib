@@ -65,6 +65,54 @@ def _exchange_kwargs(node) -> dict:
     d.update(_as_json_dict(node.get_property("exchange_kwargs")))
     return d
 
+
+def _lookup_module_path(class_name: str, kind: str = "model") -> str:
+    """按类名从注册表反查 ``module_path``（AST 扫描，不 import qlib / torch）。
+
+    比 ``fix_workflow_errors`` 里的硬编码表可靠得多 —— 那张表写错过
+    （``GRU -> qlib.contrib.model.rnn`` 这个模块根本不存在），
+    而且与 qlib 源码的对应关系会随版本漂移。
+
+    注册表不可用时返回空串，调用方保持原有行为。
+    """
+    try:
+        from pipeline.registry import build
+        return build().module_of(class_name or "", kind)
+    except Exception:
+        return ""
+
+
+def _autofill_module_path(node, setter, kind: str,
+                          class_prop: str, module_prop: str) -> None:
+    """类名一改就顺手把 ``module_path`` 带出来。
+
+    为什么做在节点里：模型/策略节点只有「类名」「module_path」两个文本框，
+    用户改完类名常常忘了改 module_path —— 而这一对填错时的报错
+    （``ModuleNotFoundError`` 或取到另一个模块的同名类）离「哪个字段错了」很远。
+
+    三种情况**不**动：
+    - 注册表不可用（拿不到 qlib 源码）
+    - 类名有歧义（同名类且没有官方基准背书）→ 交给校验如实报告，不猜
+    - 当前 module_path 对新类名仍然合法（是用户自己选的，尊重）
+    """
+    try:
+        from pipeline.registry import build
+        cls_name = node.get_property(class_prop)
+        if not isinstance(cls_name, str) or not cls_name.strip():
+            return
+        cls_name = cls_name.strip()
+        reg = build()
+        cur = node.get_property(module_prop)
+        cur = cur.strip() if isinstance(cur, str) else ""
+        cands = reg.by_name(cls_name, kind)
+        if cur and any(cur in c.all_modules for c in cands):
+            return
+        want = reg.module_of(cls_name, kind)
+        if want and want != cur:
+            setter(module_prop, want, push_undo=False)
+    except Exception:
+        pass
+
 # ---------------------------------------------------------------------------
 # 导入策略：NodeGraphQt 是硬依赖（拿不到就建不出节点），必须显式失败。
 # 原先把 qlib_core 与 BaseNode 放在同一个 try 里，任一导入失败就把 BaseNode
@@ -581,6 +629,17 @@ class QlibModelNode(QlibCoreBaseNode):
         self.add_text_input('module_path', '模型模块路径', '')
         self.add_text_input('model_kwargs', '模型参数(完整配置, JSON)', '{}')
 
+    def set_property(self, name, value, **kwargs):
+        """改 ``model_class`` 时自动带出 ``module_path``（见 :func:`_autofill_module_path`）。
+
+        注意必须接受 ``**kwargs``：NodeGraphQt 会以
+        ``set_property('selected', False, push_undo=True)`` 这种形式调用。
+        """
+        super().set_property(name, value, **kwargs)
+        if name == 'model_class':
+            _autofill_module_path(self, super().set_property, 'model',
+                                  'model_class', 'module_path')
+
     def execute(self) -> bool:
         """执行模型创建和训练"""
         try:
@@ -591,47 +650,40 @@ class QlibModelNode(QlibCoreBaseNode):
                 pass  # 继续执行，使用默认配置
 
             model_class = self.get_property('model_class')
-            model_params_str = self.get_property('model_params')
 
-            # 检查是否有完整的模型配置（来自YAML）
-            module_path = self.get_property('module_path')
+            # 参数字典 = model_params 打底，model_kwargs 覆盖其上。
+            #
+            # ⚠️ 原实现是「有 module_path 就**只读 model_kwargs、完全忽略
+            # model_params**」。而官方基准模板恰好把论文超参放在
+            # model_params、同时写了 module_path —— 于是超参被整体丢弃
+            # （静默、不报错），模型用默认值训练。实测 48 个官方模板全部如此。
+            # 与策略节点的合并语义保持一致（那边早先修过同一个坑）。
+            model_kwargs = _as_json_dict(self.get_property('model_params'))
+            model_kwargs.update(_as_json_dict(self.get_property('model_kwargs')))
+
+            module_path = (self.get_property('module_path') or '').strip()
+            if not module_path:
+                module_path = _lookup_module_path(model_class, 'model')
+
+            model_config = {'class': model_class, 'kwargs': model_kwargs}
             if module_path:
-                # 使用完整的模型配置
-                model_config = {
-                    'class': model_class,
-                    'module_path': module_path,
-                    'kwargs': _as_json_dict(self.get_property('model_kwargs'))
-                }
-            else:
-                # 使用简化的模型配置
-                try:
-                    import json
-                    model_params = json.loads(model_params_str) if model_params_str else {}
-                except:
-                    model_params = {}
+                model_config['module_path'] = module_path
 
-                model_config = {
-                    'class': model_class,
-                    'kwargs': model_params
-                }
-
-            # 导入错误修复器并修复参数
+            # LSTM 参数类型规范（只统一取值类型，不增删参数）。
+            #
+            # 这里刻意**不再调用** WorkflowErrorFixer.fix_model_config ——
+            # 那个函数会用一张硬编码表**整个覆盖** model_config，实测把
+            # LSTM 换成了 pytorch_lstm_ts（需要 TSDatasetH，普通 DatasetH 会报错）、
+            # XGBModel 指向 gbdt（该模块里没有 XGBModel）、TRAModel 指向包。
             try:
                 from fix_workflow_errors import WorkflowErrorFixer
-
-                # 如果是LSTM模型，修复参数类型问题
                 if model_class == 'LSTM':
-                    logger.info("🔧 检测到LSTM模型，修复参数类型...")
-                    if 'kwargs' in model_config:
-                        model_config['kwargs'] = WorkflowErrorFixer.fix_lstm_model_params(model_config['kwargs'])
-                    logger.info("✅ LSTM模型参数修复完成")
-
-                # 构建修复后的模型配置
-                model_config = WorkflowErrorFixer.fix_model_config(model_class, model_config.get('kwargs', {}))
-
+                    model_config['kwargs'] = WorkflowErrorFixer.fix_lstm_model_params(
+                        model_config['kwargs'])
             except ImportError:
-                # 如果无法导入修复器，使用原始配置
                 pass
+            except Exception as e:
+                logger.debug(f"LSTM 参数类型修复跳过（不影响流程）: {e}")
 
             # 使用Qlib核心创建模型
             model = self.execute_qlib_operation(
@@ -726,6 +778,18 @@ class QlibStrategyNode(QlibCoreBaseNode):
         self.add_text_input('signal', '信号', '<PRED>')
         self.add_text_input('strategy_params', '策略参数', '{"topk": 50, "n_drop": 5}')
         self.add_text_input('strategy_kwargs', '策略参数字典', '{}')
+
+    def set_property(self, name, value, **kwargs):
+        """改 ``strategy_class`` 时自动带出 ``module_path``。
+
+        策略节点的 module_path 默认写死 ``signal_strategy``，用户把类名改成
+        规则类（如 ``ACStrategy``）却忘了改模块，运行时会
+        ``ModuleNotFoundError``。这里在改类名时顺手纠正。
+        """
+        super().set_property(name, value, **kwargs)
+        if name == 'strategy_class':
+            _autofill_module_path(self, super().set_property, 'strategy',
+                                  'strategy_class', 'module_path')
 
     def execute(self) -> bool:
         """执行策略创建"""

@@ -11,6 +11,21 @@ from typing import Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
+
+def _registry_module(class_name: str, kind: str) -> str:
+    """按类名从注册表反查 module_path；注册表不可用时返回空串。
+
+    硬编码的「类名 -> 模块」表会随 qlib 版本漂移，而且本项目里已经写错过
+    （``GRU -> qlib.contrib.model.rnn`` 这个模块不存在）。注册表直接扫源码，
+    是唯一可信来源；表只作为拿不到源码时的兜底。
+    """
+    try:
+        from pipeline.registry import build
+        return build().module_of(class_name or "", kind)
+    except Exception:
+        return ""
+
+
 class WorkflowErrorFixer:
     """工作流错误修复器"""
 
@@ -121,23 +136,34 @@ class WorkflowErrorFixer:
 
     @staticmethod
     def fix_model_config(model_class: str, model_params: Dict[str, Any]) -> Dict[str, Any]:
-        """修复模型配置，添加必要的模块路径"""
-        try:
-            # 根据模型类型确定模块路径
-            module_paths = {
-                'LSTM': 'qlib.contrib.model.pytorch_lstm_ts',
-                'LGBModel': 'qlib.contrib.model.gbdt',
-                'XGBModel': 'qlib.contrib.model.gbdt',
-                'CatBoostModel': 'qlib.contrib.model.gbdt',
-                'LinearModel': 'qlib.contrib.model.linear',
-                'GRU': 'qlib.contrib.model.rnn',
-                'ALSTM': 'qlib.contrib.model.pytorch_alstm',
-                'SFM': 'qlib.contrib.model.pytorch_sfm',
-                'GATs': 'qlib.contrib.model.pytorch_gats',
-                'Transformer': 'qlib.contrib.model.pytorch_transformer'
-            }
+        """修复模型配置，添加必要的模块路径。
 
-            module_path = module_paths.get(model_class, 'qlib.contrib.model')
+        优先用**注册表**（AST 扫描 qlib 源码）反查 —— 下面那张表以前写错过
+        （``GRU -> qlib.contrib.model.rnn`` 这个模块根本不存在，
+        ``XGBModel -> gbdt`` / ``CatBoostModel -> gbdt`` 也都指错了文件）。
+        注册表不可用时才退回表。
+        """
+        try:
+            module_path = _registry_module(model_class, "model")
+            if not module_path:
+                module_paths = {
+                    'LGBModel': 'qlib.contrib.model.gbdt',
+                    'XGBModel': 'qlib.contrib.model.xgboost',
+                    'CatBoostModel': 'qlib.contrib.model.catboost_model',
+                    'DEnsembleModel': 'qlib.contrib.model.double_ensemble',
+                    'LinearModel': 'qlib.contrib.model.linear',
+                    'LSTM': 'qlib.contrib.model.pytorch_lstm',
+                    'GRU': 'qlib.contrib.model.pytorch_gru',
+                    'ALSTM': 'qlib.contrib.model.pytorch_alstm',
+                    'GATs': 'qlib.contrib.model.pytorch_gats',
+                    'SFM': 'qlib.contrib.model.pytorch_sfm',
+                    'TCN': 'qlib.contrib.model.pytorch_tcn',
+                    'TabnetModel': 'qlib.contrib.model.pytorch_tabnet',
+                    'TransformerModel': 'qlib.contrib.model.pytorch_transformer',
+                    'TRAModel': 'qlib.contrib.model.pytorch_tra',
+                    'DNNModelPytorch': 'qlib.contrib.model.pytorch_nn',
+                }
+                module_path = module_paths.get(model_class, 'qlib.contrib.model')
 
             # 构建完整的模型配置
             model_config = {
@@ -159,18 +185,21 @@ class WorkflowErrorFixer:
 
     @staticmethod
     def fix_strategy_config(strategy_class: str, strategy_params: Dict[str, Any]) -> Dict[str, Any]:
-        """修复策略配置，添加必要的模块路径"""
+        """修复策略配置，添加必要的模块路径（同 :meth:`fix_model_config`，注册表优先）。"""
         try:
-            # 根据策略类型确定模块路径
-            module_paths = {
-                'TopkDropoutStrategy': 'qlib.contrib.strategy.signal_strategy',
-                'TopkStrategy': 'qlib.contrib.strategy.signal_strategy',
-                'WeightStrategy': 'qlib.contrib.strategy.weight_strategy',
-                'TWAPStrategy': 'qlib.contrib.strategy.twap_strategy',
-                'VWAPStrategy': 'qlib.contrib.strategy.vwap_strategy'
-            }
-
-            module_path = module_paths.get(strategy_class, 'qlib.contrib.strategy')
+            module_path = _registry_module(strategy_class, "strategy")
+            if not module_path:
+                module_paths = {
+                    'TopkDropoutStrategy': 'qlib.contrib.strategy.signal_strategy',
+                    'WeightStrategyBase': 'qlib.contrib.strategy.signal_strategy',
+                    'EnhancedIndexingStrategy': 'qlib.contrib.strategy.signal_strategy',
+                    'TWAPStrategy': 'qlib.contrib.strategy.rule_strategy',
+                    'SBBStrategyBase': 'qlib.contrib.strategy.rule_strategy',
+                    'SBBStrategyEMA': 'qlib.contrib.strategy.rule_strategy',
+                    'ACStrategy': 'qlib.contrib.strategy.rule_strategy',
+                    'SoftTopkStrategy': 'qlib.contrib.strategy.cost_control',
+                }
+                module_path = module_paths.get(strategy_class, 'qlib.contrib.strategy')
 
             # 构建完整的策略配置
             strategy_config = {
