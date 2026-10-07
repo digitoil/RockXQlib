@@ -929,6 +929,15 @@ class RockXQlibMainWindow(PipelineGuiMixin, QMainWindow):
         reset_color_action.triggered.connect(self.reset_node_colors)
         workflow_menu.addAction(reset_color_action)
 
+        # 数据菜单（数据管理：体检；导入走 CLI，见 python -m pipeline data-import）
+        data_menu = menubar.addMenu('数据')
+
+        data_check_action = QAction('数据体检…', self)
+        data_check_action.setToolTip(
+            '检查数据目录能不能用、能用到哪一天（直接读 bin/txt，不加载 qlib）')
+        data_check_action.triggered.connect(self.data_check)
+        data_menu.addAction(data_check_action)
+
         # 帮助菜单
         help_menu = menubar.addMenu('帮助')
 

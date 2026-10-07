@@ -14,6 +14,8 @@
     python -m pipeline models [--class LGBModel]  # 可用模型（类名 -> module_path -> 参数）
     python -m pipeline strategies                 # 可用策略
     python -m pipeline autofill x.yaml            # 预览 module_path 会补成什么
+    python -m pipeline data-check                 # 体检数据目录（能不能信、能用到哪天）
+    python -m pipeline data-import a.csv --out D  # CSV 导入成 qlib 数据目录
 """
 from __future__ import annotations
 
@@ -117,6 +119,30 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("autofill",
                        help="预览「module_path 能被自动补成什么」（不改文件）")
     p.add_argument("pipeline")
+
+    # ---- 数据管理 ----
+    p = sub.add_parser("data-check",
+                       help="体检 qlib 数据目录（结构/日历/清单/特征/与模板对照）")
+    p.add_argument("--provider-uri", default="", help="数据目录；留空则自动探测")
+    p.add_argument("--freq", default="day")
+    p.add_argument("--sample", type=int, default=400, help="抽查多少只标的")
+    p.add_argument("--deep", action="store_true", help="全量检查（慢，几千个文件）")
+    p.add_argument("--json", dest="as_json", action="store_true",
+                   help="输出 JSON（给脚本/GUI 用）")
+    p.add_argument("--no-templates", action="store_true",
+                   help="跳过「模板区间/基准 vs 数据覆盖」对照")
+
+    p = sub.add_parser("data-import",
+                       help="把 CSV 行情导入成 qlib 数据目录（新建或增量追加）")
+    p.add_argument("source", help="CSV 文件，或包含多个 CSV 的目录")
+    p.add_argument("--out", required=True, help="目标 qlib 数据目录")
+    p.add_argument("--freq", default="day")
+    p.add_argument("--no-normalize", dest="normalize", action="store_false",
+                   help="不把新标的的 OHLC 按首日收盘归一化（默认归一化，与官方一致）")
+    p.add_argument("--instrument-list", default="",
+                   help="额外生成一个股票池清单（自动剔除指数），如 --instrument-list mypool")
+    p.add_argument("--dry-run", action="store_true", help="只演练不写盘")
+    p.add_argument("--limit", type=int, default=0, help="目录模式下最多读几个文件")
     return ap
 
 
@@ -260,6 +286,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.cmd == "autofill":
         return _cmd_autofill(args)
 
+    if args.cmd == "data-check":
+        return _cmd_data_check(args)
+
+    if args.cmd == "data-import":
+        return _cmd_data_import(args)
+
     if args.cmd == "accept":
         from .llm import accept_draft
         _prepare_or_exit(args.draft, [])
@@ -286,6 +318,35 @@ def _cmd_registry(args) -> int:
     else:
         print(reg.format_list(kind))
     return 0
+
+
+def _cmd_data_check(args) -> int:
+    """``data-check``：体检 qlib 数据目录。"""
+    from .data_health import check, format_report, report_json
+
+    rep = check(provider_uri=args.provider_uri or None, freq=args.freq,
+                sample=args.sample, deep=args.deep,
+                check_templates=not args.no_templates)
+    if args.as_json:
+        print(json.dumps(report_json(rep), ensure_ascii=False, indent=2))
+    else:
+        print(format_report(rep))
+    # 退出码：有错误返回 2，只有警告返回 1，干净返回 0 —— 方便 CI 卡口
+    if rep.errors():
+        return 2
+    return 1 if rep.warns() else 0
+
+
+def _cmd_data_import(args) -> int:
+    """``data-import``：CSV -> qlib 数据目录。"""
+    from .data_import import format_result, import_csv
+
+    res = import_csv(args.source, args.out, freq=args.freq,
+                     normalize=args.normalize, dry_run=args.dry_run,
+                     limit=args.limit or None,
+                     instrument_list=args.instrument_list or None)
+    print(format_result(res))
+    return 2 if res.errors() else 0
 
 
 def _cmd_autofill(args) -> int:

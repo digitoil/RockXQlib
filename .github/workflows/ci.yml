@@ -12,11 +12,11 @@ jobs:
       - name: 安装依赖（Qt 离屏 + NodeGraphQt，用于面板与真实节点规格测试）
         run: |
           sudo apt-get update -q && sudo apt-get install -y -q libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3
-          pip install pyyaml PySide6-Essentials NodeGraphQt
+          pip install pyyaml numpy pandas PySide6-Essentials NodeGraphQt
       - name: 核心纯净性守门
         run: python tests/test_core_purity.py
-      - name: 流水线 / 助手 / 面板 / 基准导入 / 注册表 / 规格一致性测试
-        run: python -m unittest tests.test_pipeline tests.test_assistant tests.test_assistant_dock_qt tests.test_assistant_probe_qt tests.test_pipeline_panel_qt tests.test_llm_probe tests.test_qlib_benchmarks tests.test_registry tests.test_specs_vs_real -v
+      - name: 流水线 / 助手 / 面板 / 基准导入 / 注册表 / 数据管理 / 规格一致性测试
+        run: python -m unittest tests.test_pipeline tests.test_assistant tests.test_assistant_dock_qt tests.test_assistant_probe_qt tests.test_pipeline_panel_qt tests.test_llm_probe tests.test_qlib_benchmarks tests.test_registry tests.test_data tests.test_specs_vs_real -v
       - name: LLM 端点探测（无服务时应给出建议而非崩溃）
         run: python -m pipeline llm-check --timeout 2 || true
       - name: 模型/策略注册表（AST 扫描，不 import qlib/torch）
@@ -25,6 +25,31 @@ jobs:
           python -m pipeline strategies
           python -m pipeline models --class LGBModel
           python -m pipeline strategies --class TopkDropoutStrategy
+      - name: 数据管理闭环（造 CSV -> 导入 -> 体检 -> 有错误才算失败）
+        run: |
+          python - <<'PY'
+          import pandas as pd
+          dates = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=60)
+          rows = []
+          for s in ("600000.SH", "000001.SZ", "000300.SH"):
+              for i, d in enumerate(dates):
+                  c = 10.0 + i * 0.1
+                  # OHLC 必须自洽：high >= close >= low，否则体检会（正确地）判为错误
+                  rows.append({"date": d.strftime("%Y-%m-%d"), "symbol": s,
+                               "open": round(c * 0.99, 2), "high": round(c * 1.02, 2),
+                               "low": round(c * 0.98, 2), "close": round(c, 2),
+                               "volume": 1e6 + i})
+          pd.DataFrame(rows).to_csv("/tmp/ci.csv", index=False)
+          PY
+          python -m pipeline data-import /tmp/ci.csv --out /tmp/ci_data --instrument-list pool
+          test -f /tmp/ci_data/instruments/pool.txt
+          # 退出码：0=干净 1=有警告 2=有错误。CI 只把「有错误」当失败
+          set +e
+          python -m pipeline data-check --provider-uri /tmp/ci_data --no-templates
+          rc=$?
+          set -e
+          echo "data-check 退出码: $rc"
+          if [ "$rc" -ge 2 ]; then echo "数据体检发现错误"; exit 1; fi
       - name: 模板校验（全部，含 qlib 官方基准导入的模板）
         run: |
           fail=0

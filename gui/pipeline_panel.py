@@ -53,6 +53,81 @@ def _guarded(fn):
 class PipelineGuiMixin:
     """混入 RockXQlibMainWindow。依赖：self.graph / self.log_message / self.status_label。"""
 
+    # ---------- 数据管理 ----------
+    def _canvas_provider_uri(self) -> str:
+        """从画布的「Qlib初始化」节点取数据目录；没有就返回空串（交给自动探测）。"""
+        try:
+            from core.workflow_schema import serialize_graph
+            for n in serialize_graph(self.graph).get("nodes", []):
+                if n.get("type") == "qlib.core.init":
+                    v = (n.get("props") or {}).get("provider_uri")
+                    if v:
+                        return str(v)
+        except Exception:
+            pass
+        return ""
+
+    @_guarded
+    def data_check(self):
+        """体检数据目录：直接读 bin/txt，不 init qlib（省掉加载几百 MB 特征的时间）。
+
+        同步执行会卡住界面几秒，所以**先弹一个进度框**再算；算完替换成报告。
+        抽样 120 只（全量要读 2.7 万个文件，那是 CLI ``--deep`` 的事）。
+        """
+        from PySide6.QtWidgets import QApplication
+        uri = self._canvas_provider_uri()
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("数据体检")
+        dlg.resize(940, 640)
+        lay = QVBoxLayout(dlg)
+        head = QLabel("目录：%s\n正在体检…（读 calendars / instruments / features，不 init qlib）"
+                      % (uri or "（自动探测）"))
+        lay.addWidget(head)
+        view = QPlainTextEdit()
+        view.setReadOnly(True)
+        view.setLineWrapMode(QPlainTextEdit.NoWrap)
+        lay.addWidget(view)
+        row = QHBoxLayout()
+        copy_btn = QPushButton("复制报告")
+        close_btn = QPushButton("关闭")
+        row.addStretch(1)
+        row.addWidget(copy_btn)
+        row.addWidget(close_btn)
+        lay.addLayout(row)
+        close_btn.clicked.connect(dlg.reject)
+        copy_btn.clicked.connect(
+            lambda: QApplication.clipboard().setText(view.toPlainText()))
+        dlg.show()
+        QApplication.processEvents()
+
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            from pipeline.data_health import check, format_report
+            rep = check(uri or None, sample=120)
+            text = format_report(rep)
+        except Exception as e:
+            QApplication.restoreOverrideCursor()
+            head.setText("目录：%s —— 体检失败" % (uri or "（自动探测）"))
+            view.setPlainText("%s: %s" % (type(e).__name__, e))
+            dlg.exec()
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        head.setText("目录：%s\n可用区间 %s → %s（%d 个交易日）"
+                     % (rep.provider_uri or "（未找到数据目录）",
+                        rep.start or "-", rep.end or "-", rep.days))
+        view.setPlainText(text)
+        try:
+            self.log_message("数据体检 %s：%d 个错误 / %d 条警告"
+                             % (rep.provider_uri or "(未找到)",
+                                len(rep.errors()), len(rep.warns())),
+                             "ERROR" if rep.errors() else "INFO")
+        except Exception:
+            pass
+        dlg.exec()
+
     # ---------- 公共：把流水线 doc 校验后落到画布 ----------
     def _specs_for_pipeline(self):
         from core.workflow_schema import collect_specs_from_graph
