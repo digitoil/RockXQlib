@@ -77,9 +77,16 @@ pip install qlib
 ```
 
 ### 2. qlib数据未下载
+
+官方日频 A 股数据（Alpha158、仓库根目录的 LSTM workflow 需要它）：
+
 ```bash
-python -c "import qlib; qlib.run_all()"
+python -m qlib.cli.data qlib_data --target_dir ~/.qlib/qlib_data/cn_data --region cn
 ```
+
+没有这份数据时，`python -m pipeline qrun workflows/lgb_alpha158.yaml` 会在训练开始前失败，不会写成功记录。
+
+只想先跑通「训练 → recorder 里的预测 → 回测」时，不必下全市场。把 CSV 收成 qlib 目录再跑最小配置，见 [docs/QLIB_RESEARCH.md](docs/QLIB_RESEARCH.md)。
 
 ### 3. 环境变量未设置
 确保运行启动脚本前设置了正确的环境变量。

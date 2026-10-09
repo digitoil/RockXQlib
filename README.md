@@ -248,3 +248,14 @@ python test_unified_system_simple.py
 
 ## 流水线开发
 见 [docs/PIPELINE.md](docs/PIPELINE.md)：模板库、AI 生成、运行记录、命令行批量与 CI。
+
+## Qlib 研究实验（无 GUI）
+
+`python -m pipeline qrun` 按 qlib 的 workflow YAML 做初始化、训练、把预测写进 recorder，并在配置里有 `PortAnaRecord` 时回测。没有数据或没有预测时命令失败，不会写一份成功摘要。
+
+```bash
+python -m pipeline data-import prices.csv --out ./qlib_data --instrument-list pool
+python -m pipeline qrun workflows/lgb_close_minimal.yaml --provider-uri ./qlib_data
+```
+
+Alpha158 / 官方 cn_data、以及记录目录里能读回什么，见 [docs/QLIB_RESEARCH.md](docs/QLIB_RESEARCH.md)。

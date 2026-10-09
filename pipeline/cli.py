@@ -16,6 +16,7 @@
     python -m pipeline autofill x.yaml            # 预览 module_path 会补成什么
     python -m pipeline data-check                 # 体检数据目录（能不能信、能用到哪天）
     python -m pipeline data-import a.csv --out D  # CSV 导入成 qlib 数据目录
+    python -m pipeline qrun workflows/lgb_close_minimal.yaml --provider-uri ./qlib_data
 """
 from __future__ import annotations
 
@@ -143,6 +144,16 @@ def build_parser() -> argparse.ArgumentParser:
                    help="额外生成一个股票池清单（自动剔除指数），如 --instrument-list mypool")
     p.add_argument("--dry-run", action="store_true", help="只演练不写盘")
     p.add_argument("--limit", type=int, default=0, help="目录模式下最多读几个文件")
+
+    p = sub.add_parser(
+        "qrun",
+        help="按 qlib 工作流 YAML 训练、把预测写入 recorder，配置里有 PortAnaRecord 时回测",
+    )
+    p.add_argument("config", help="qlib qrun 配置，例如 workflows/lgb_close_minimal.yaml")
+    p.add_argument("--provider-uri", default="", help="覆盖 qlib_init.provider_uri")
+    p.add_argument("--experiment-name", default="", help="实验名，默认 workflow 或配置里的 experiment_name")
+    p.add_argument("--uri-folder", default="", help="记录目录，默认 ./mlruns")
+    p.add_argument("--recorder-name", default="")
     return ap
 
 
@@ -292,6 +303,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.cmd == "data-import":
         return _cmd_data_import(args)
 
+    if args.cmd == "qrun":
+        return _cmd_qrun(args)
+
     if args.cmd == "accept":
         from .llm import accept_draft
         _prepare_or_exit(args.draft, [])
@@ -307,7 +321,7 @@ def _cmd_registry(args) -> int:
     kind = MODEL if args.cmd == "models" else STRATEGY
     reg = build()
     if not reg.of_kind(kind):
-        print("未扫描到任何%s —— qlib 源码目录（qlib/contrib/…）不在项目里？"
+        print("未扫描到任何%s —— 项目里没有 qlib/contrib，也没有安装 pyqlib。"
               % ("模型" if kind == MODEL else "策略"))
         return 1
     if args.klass:
@@ -335,6 +349,26 @@ def _cmd_data_check(args) -> int:
     if rep.errors():
         return 2
     return 1 if rep.warns() else 0
+
+
+def _cmd_qrun(args) -> int:
+    """``qrun``：qlib task_train。失败只打印原因，退出码 1。"""
+    from core.qlib_research import QlibResearchError, format_summary, run_qlib_experiment
+
+    try:
+        summary = run_qlib_experiment(
+            args.config,
+            experiment_name=args.experiment_name or None,
+            uri_folder=args.uri_folder or None,
+            recorder_name=args.recorder_name or None,
+            provider_uri=args.provider_uri or None,
+        )
+    except QlibResearchError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(format_summary(summary))
+    print("摘要: %s" % (Path(summary["recorder_dir"]) / "summary.json"))
+    return 0
 
 
 def _cmd_data_import(args) -> int:
