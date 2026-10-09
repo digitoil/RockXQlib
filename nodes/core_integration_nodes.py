@@ -361,79 +361,64 @@ class ExperimentManagerNode(QlibCoreBaseNode):
         self.add_text_input('output_dir', '输出目录', './experiments/')
     
     def execute(self) -> bool:
-        """执行实验管理"""
+        """把上游传来的真实指标写入实验目录。没有指标就失败，不填占位分数。"""
         try:
-            # 检查输入
             experiment_data = self.get_input('experiment_data')
-            
             experiment_name = self.get_property('experiment_name')
             experiment_type = self.get_property('experiment_type')
-            enable_logging = self.get_property('enable_logging')
-            enable_metrics = self.get_property('enable_metrics')
-            output_dir = self.get_property('output_dir')
-            
-            # 使用实验管理器
-            if QlibExperimentManager:
-                experiment_manager = QlibExperimentManager(
-                    experiment_name=experiment_name,
-                    output_dir=output_dir,
-                    enable_logging=enable_logging,
-                    enable_metrics=enable_metrics
+            output_dir = self.get_property('output_dir') or './experiments/'
+
+            if QlibExperimentManager is None:
+                self._error_message = "QlibExperimentManager 不可用，不会用模拟分数冒充实验记录"
+                self._execution_result = {'status': 'failed', 'error': self._error_message}
+                logger.error(self._error_message)
+                return False
+
+            metrics = None
+            params = None
+            if isinstance(experiment_data, dict):
+                if isinstance(experiment_data.get('metrics'), dict):
+                    metrics = experiment_data['metrics']
+                params = experiment_data.get('params') or experiment_data.get('parameters')
+            if not metrics:
+                self._error_message = (
+                    "没有可记录的指标。请把上游结果里的 metrics 接到本节点；"
+                    "不会写入 accuracy=0.85 这类占位值。"
                 )
-                
-                # 开始实验
-                experiment_manager.start_experiment()
-                
-                # 记录参数
-                if experiment_data:
-                    experiment_manager.log_parameters(experiment_data)
-                
-                # 记录指标
-                if enable_metrics:
-                    mock_metrics = {
-                        'accuracy': 0.85,
-                        'precision': 0.82,
-                        'recall': 0.88,
-                        'f1_score': 0.85
-                    }
-                    experiment_manager.log_metrics(mock_metrics)
-                
-                # 结束实验
-                experiment_manager.end_experiment()
-                
-                # 获取实验结果
-                experiment_results = experiment_manager.get_experiment_results()
-                
-                self._execution_result = {
-                    'status': 'success',
-                    'experiment_name': experiment_name,
-                    'experiment_type': experiment_type,
-                    'experiment_results': experiment_results,
-                    'output_dir': output_dir,
-                    'logging_enabled': enable_logging,
-                    'metrics_enabled': enable_metrics
-                }
-                self.set_output('experiment_result', self._execution_result)
-                logger.info(f"✅ 实验管理完成: {experiment_name}")
-                return True
-            else:
-                # 模拟实验管理
-                self._execution_result = {
-                    'status': 'success',
-                    'experiment_name': experiment_name,
-                    'experiment_type': experiment_type,
-                    'experiment_results': {'status': 'completed', 'metrics': {'accuracy': 0.85}},
-                    'output_dir': output_dir,
-                    'logging_enabled': enable_logging,
-                    'metrics_enabled': enable_metrics,
-                    'note': '使用模拟实验管理'
-                }
-                self.set_output('experiment_result', self._execution_result)
-                logger.info(f"✅ 模拟实验管理完成: {experiment_name}")
-                return True
-                
+                self._execution_result = {'status': 'failed', 'error': self._error_message}
+                logger.error(self._error_message)
+                return False
+
+            manager = QlibExperimentManager(experiments_dir=output_dir)
+            experiment_id = manager.create_experiment(
+                experiment_name, {'description': experiment_type or ''})
+            if not experiment_id:
+                self._error_message = "创建实验失败"
+                self._execution_result = {'status': 'failed', 'error': self._error_message}
+                return False
+            run_id = manager.start_run(experiment_id, experiment_name)
+            if isinstance(params, dict) and params:
+                manager.log_parameters(run_id, params)
+            manager.log_metrics(run_id, metrics)
+            manager.end_run(run_id)
+            stored = manager.get_run(run_id) or {}
+
+            self._execution_result = {
+                'status': 'success',
+                'experiment_name': experiment_name,
+                'experiment_type': experiment_type,
+                'experiment_id': experiment_id,
+                'run_id': run_id,
+                'experiment_results': stored,
+                'output_dir': output_dir,
+            }
+            self.set_output('experiment_result', self._execution_result)
+            logger.info("✅ 已记录实验 %s / %s", experiment_name, run_id)
+            return True
         except Exception as e:
             logger.error(f"实验管理节点执行失败: {e}")
+            self._error_message = str(e)
+            self._execution_result = {'status': 'failed', 'error': self._error_message}
             return False
 
 class ParallelExecutorNode(QlibCoreBaseNode):

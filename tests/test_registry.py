@@ -6,7 +6,8 @@
    哪些类该收、哪些该排除、包再导出怎么算、同名歧义怎么判、超参怎么校验。
    夹具让这些规则可被精确断言，不受真实 qlib 版本影响。
 2. **对真实仓库的集成断言** —— 确认注册表在本项目里真的能用
-   （找得到 33 个模型、LSTM 有歧义、官方模板的包路径写法不被误判）。
+   （找得到已安装或随仓库带上的 qlib 模型、LSTM 有歧义、
+   官方模板的包路径写法不被误判）。没有 qlib 源码时这组测试跳过。
 
 注意：全程不 import qlib。这正是本模块的设计约束 ——
 ``qlib/contrib/model`` 下几乎每个文件都 ``import torch``。
@@ -415,12 +416,19 @@ class RegistryFixtureTest(unittest.TestCase):
 
 
 class RealRepoIntegrationTest(unittest.TestCase):
-    """对着真实仓库确认注册表可用（本项目自带 qlib 源码）。"""
+    """对着真实仓库确认注册表可用。
+
+    源码可以在仓库内的 ``qlib/``（本地完整检出），也可以是已安装的
+    pyqlib。两处都没有时跳过 —— 空注册表不该把流水线判失败，那条行为
+    由 :class:`AbsentSourceTest` 覆盖。
+    """
 
     @classmethod
     def setUpClass(cls):
         clear_cache()
         cls.reg = build()
+        if not cls.reg.names(MODEL):
+            raise unittest.SkipTest("需要 qlib 源码（仓库内 qlib/ 或已安装 pyqlib）")
 
     @classmethod
     def tearDownClass(cls):
@@ -431,8 +439,11 @@ class RealRepoIntegrationTest(unittest.TestCase):
         for expect in ("LGBModel", "XGBModel", "CatBoostModel", "DEnsembleModel",
                        "LinearModel", "LSTM", "GRU", "ALSTM", "GATs", "SFM", "TCN",
                        "TabnetModel", "TransformerModel", "TRAModel",
-                       "DNNModelPytorch", "TFTModel"):
+                       "DNNModelPytorch"):
             self.assertIn(expect, names, "缺少模型 %s" % expect)
+        tft = Path(__file__).resolve().parent.parent / "examples/benchmarks/TFT/tft.py"
+        if tft.is_file():
+            self.assertIn("TFTModel", names)
 
     def test_strategy_set_includes_reexported_ones(self):
         names = {c.name for c in self.reg.of_kind(STRATEGY)}
@@ -502,8 +513,28 @@ class RealRepoIntegrationTest(unittest.TestCase):
         self.assertIn("TopkDropoutStrategy", text)
 
 
+class AbsentSourceTest(unittest.TestCase):
+    """qlib 源码完全不在时，类名检查必须跳过而不是把每条流水线判失败。"""
+
+    def test_empty_registry_does_not_reject_class_names(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("pipeline.registry._installed_qlib_root", return_value=None):
+                reg = build(Path(tmp), use_cache=False)
+            self.assertEqual(reg.names(MODEL), [])
+            errs, warns = reg.check_class("LGBModel", MODEL, "qlib.contrib.model.gbdt")
+            self.assertEqual(errs, [])
+            self.assertEqual(warns, [])
+
+
 class LintIntegrationTest(unittest.TestCase):
     """注册表检查要能通过 ``lint_workflow`` 浮出来（CLI/GUI/助手都走它）。"""
+
+    @classmethod
+    def setUpClass(cls):
+        clear_cache()
+        if not build().names(MODEL):
+            raise unittest.SkipTest("需要 qlib 源码（仓库内 qlib/ 或已安装 pyqlib）")
 
     def _wf(self, node_type, props):
         return {"nodes": [{"id": "n4", "type": node_type, "props": props}], "links": []}
