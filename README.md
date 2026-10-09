@@ -1,5 +1,9 @@
 # RockXQlib - 基于Qlib的高级量化分析系统
 
+基于 Qlib 的研究工作台：可视化节点流，也可无界面跑实验。仓库在 [GitHub](https://github.com/digitoil/RockXQlib)，觉得有用欢迎点一颗 Star。无界面训练与记录见 [PR #3](https://github.com/digitoil/RockXQlib/pull/3)（`docs/QLIB_RESEARCH.md`）。
+
+A Qlib-based research workbench: visual node workflows, and headless experiment runs. The repo is on [GitHub](https://github.com/digitoil/RockXQlib); a star is welcome if it is useful. Headless training and records: [PR #3](https://github.com/digitoil/RockXQlib/pull/3) (`docs/QLIB_RESEARCH.md`).
+
 ## 🚀 系统概述
 
 RockXQlib 是一个基于 Qlib 的高级量化分析系统，提供了完整的节点化工作流、可视化分析、实验管理和插件扩展功能。系统采用NodeGraphQt原生方法实现拖拽节点创建、节点树工具箱等核心功能。
