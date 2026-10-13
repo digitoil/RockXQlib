@@ -24,8 +24,10 @@
 变成空操作，从而让「训练 → 预测 → 策略 → 回测」整条链路在纯 qlib 环境
 下也能跑通。
 
-装好完整版 mlflow 后，本 shim 会自动不再被使用（见
-``QlibCoreIntegration._mlflow_client_available``）。
+装好完整版 mlflow 后，初始化不会再用本 shim。mlflow 不完整时，
+``QlibCoreIntegration.initialize_qlib`` 现在改用 ``core.qlib_file_exp``
+把参数、指标和对象写到 ``mlruns/``，而不是丢弃。本模块仍可被显式配置为
+「完全不落盘」的实验管理器。
 """
 
 from __future__ import annotations

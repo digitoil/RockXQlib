@@ -21,7 +21,10 @@ python -m pipeline sweep pipelines/lgb_alpha158.yaml --grid n4.model_class=LGBMo
 python -m pipeline runs --compare latest <另一个run_id>
 python -m pipeline export pipelines/lgb_alpha158.yaml out.json      # GUI「导入JSON」可用
 python -m pipeline generate "CSI500 + LGB，2019 起回测" --model qwen3
+python -m pipeline qrun workflows/lgb_close_minimal.yaml --provider-uri ./qlib_data
 ```
+
+`qrun` 不走画布节点，而是 qlib 的 `task_train`（训练、recorder、配置里的回测）。说明见 [QLIB_RESEARCH.md](QLIB_RESEARCH.md)。
 
 ## 流水线文件
 链式写法，同名端口自动连线；`${param}` 引用参数；dict 属性自动转 JSON 文本。

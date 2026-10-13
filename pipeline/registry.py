@@ -26,6 +26,12 @@
 而且 CI / 服务器上可能没装 torch，注册表在这些环境里也必须能用
 （``pipeline.lint`` 会在每次 ``prepare()`` 时调用它）。
 
+扫描顺序：项目里的 ``qlib/contrib``（若存在）优先；否则用
+``importlib.util.find_spec("qlib")`` 定位已安装的 pyqlib，仍然只读源码、
+不执行模块。两处都没有时注册表为空，类名检查跳过，避免把每条流水线
+都判成「类名不在注册表里」。超参白名单同时读官方基准 YAML 和本仓库
+``pipelines/*.yaml``（基准目录通常在被 gitignore 的 ``examples/`` 里）。
+
 权威配对来自官方基准
 --------------------
 ``examples/benchmarks/**/workflow_config*.yaml`` 里的
@@ -57,6 +63,13 @@ _SOURCES: Tuple[Tuple[str, str, str], ...] = (
 # 递归扫描会混进一堆与建模无关的类。
 _EXTRA_FILES: Tuple[Tuple[str, str, str], ...] = (
     ("examples/benchmarks/TFT/tft.py", "tft", MODEL),
+)
+
+# 上面这些文件不在发行包里（examples/ 被 gitignore）。文件缺失时，
+# 模板里写了对应类名不算「类名写错」——否则没克隆 qlib examples 的
+# 环境会把官方 TFT 模板整份判失败。文件在时仍走 AST，不走这条豁免。
+_OPTIONAL_EXTRAS: Tuple[Tuple[str, str, str, str], ...] = (
+    ("examples/benchmarks/TFT/tft.py", "TFTModel", MODEL, "tft"),
 )
 
 _BENCHMARK_GLOB = "examples/benchmarks/**/workflow_config*.yaml"
@@ -250,6 +263,11 @@ class Registry:
 
         cands = self.by_name(name, kind)
         if not cands:
+            # 源码两边都没有：这是增强检查，不该让整条流水线校验失败。
+            if not self.names(kind):
+                return errors, warns
+            if _optional_extra_unscanned(self.root, name, kind, module_path):
+                return errors, warns
             hint = self.suggest(name, kind)
             extra = "；是否想写 %s？" % " / ".join(hint) if hint else ""
             errors.append("%s%s「%s」不在注册表里（共 %d 个类名，"
@@ -663,6 +681,38 @@ def _scan_single(path: Path, module: str, kind: str, root: Path) -> List[ClassIn
     return out
 
 
+def _installed_qlib_root() -> Optional[Path]:
+    """已安装 pyqlib 的包目录。只用 find_spec，不执行 ``qlib/__init__.py``。"""
+    import importlib.util
+    spec = importlib.util.find_spec("qlib")
+    if spec is None or not spec.origin:
+        return None
+    pkg = Path(spec.origin).resolve().parent
+    return pkg if (pkg / "contrib").is_dir() else None
+
+
+def _resolve_source(root: Path, rel_dir: str) -> Optional[Path]:
+    """项目内目录优先；没有则落到 site-packages 里的同一相对路径。"""
+    vendored = root / rel_dir
+    if vendored.is_dir():
+        return vendored
+    installed = _installed_qlib_root()
+    if installed is None or not rel_dir.startswith("qlib/"):
+        return None
+    candidate = installed / rel_dir.split("/", 1)[1]
+    return candidate if candidate.is_dir() else None
+
+
+def _optional_extra_unscanned(root: Path, name: str, kind: str,
+                              module_path: str) -> bool:
+    """examples 里的可选模型源码不在，且 module_path 与声明一致。"""
+    for rel, cls, k, mod in _OPTIONAL_EXTRAS:
+        if cls == name and k == kind and not (root / rel).is_file():
+            if not module_path or module_path == mod:
+                return True
+    return False
+
+
 def _benchmark_pairs(root: Path) -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
     """读官方基准，得到 ``{kind: {类名: [{"module","slug","params"}, ...]}}``。
 
@@ -700,6 +750,63 @@ def _benchmark_pairs(root: Path) -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
     return found
 
 
+def _pipeline_pairs(root: Path) -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
+    """从本仓库 ``pipelines/*.yaml`` 收集类名、模块和超参。
+
+    官方 ``examples/benchmarks`` 不进版本库。导入后的模板就在
+    ``pipelines/`` 里，超参白名单和「哪个同名类被用过」以它们为准，
+    否则 ``num_leaves`` 这类经 ``**kwargs`` 转发的参数会被误报。
+    """
+    found: Dict[str, Dict[str, List[Dict[str, Any]]]] = {MODEL: {}, STRATEGY: {}}
+    try:
+        import yaml
+    except ImportError:
+        return found
+    folder = root / "pipelines"
+    if not folder.is_dir():
+        return found
+    for f in sorted(folder.glob("*.yaml")):
+        try:
+            doc = yaml.safe_load(f.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            continue
+        if not isinstance(doc, dict):
+            continue
+        for step in doc.get("steps") or []:
+            if not isinstance(step, dict):
+                continue
+            props = step.get("props") if isinstance(step.get("props"), dict) else {}
+            if step.get("type") == "model":
+                params = props.get("model_params")
+                _add_pair(found[MODEL], {
+                    "class": props.get("model_class"),
+                    "module_path": props.get("module_path") or "",
+                    "kwargs": params if isinstance(params, dict) else {},
+                }, f.stem)
+            elif step.get("type") == "strategy":
+                kw: Dict[str, Any] = {}
+                for key in ("strategy_params", "strategy_kwargs"):
+                    val = props.get(key)
+                    if isinstance(val, dict):
+                        kw.update(val)
+                _add_pair(found[STRATEGY], {
+                    "class": props.get("strategy_class"),
+                    "module_path": props.get("module_path") or "",
+                    "kwargs": kw,
+                }, f.stem)
+    return found
+
+
+def _merge_pairs(*sources: Dict[str, Dict[str, List[Dict[str, Any]]]]
+                 ) -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
+    merged: Dict[str, Dict[str, List[Dict[str, Any]]]] = {MODEL: {}, STRATEGY: {}}
+    for src in sources:
+        for kind in (MODEL, STRATEGY):
+            for cls, refs in (src.get(kind) or {}).items():
+                merged[kind].setdefault(cls, []).extend(refs)
+    return merged
+
+
 def _add_pair(bucket: Dict[str, List[Dict[str, Any]]], spec: Any, slug: str) -> None:
     if not isinstance(spec, dict):
         return
@@ -724,15 +831,17 @@ def build(root: Path = PROJECT_ROOT, use_cache: bool = True) -> Registry:
     root = Path(root)
     found: List[ClassInfo] = []
     for rel_dir, prefix, kind in _SOURCES:
-        found.extend(_scan_source(root / rel_dir, prefix, kind, root))
+        src = _resolve_source(root, rel_dir)
+        if src is not None:
+            found.extend(_scan_source(src, prefix, kind, root))
     for rel, module, kind in _EXTRA_FILES:
         p = root / rel
         if p.is_file():
             found.extend(_scan_single(p, module, kind, root))
 
-    # 用官方基准补上「权威组合」与 slug（基准里 module_path 可能写包名，
-    # 所以别名路径也要认），并收集基准用过的超参名作为白名单
-    pairs = _benchmark_pairs(root)
+    # 用官方基准和本仓库模板补上「权威组合」与 slug（基准里 module_path
+    # 可能写包名，所以别名路径也要认），并收集用过的超参名作为白名单
+    pairs = _merge_pairs(_benchmark_pairs(root), _pipeline_pairs(root))
     if pairs:
         enriched: List[ClassInfo] = []
         for c in found:

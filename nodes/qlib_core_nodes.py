@@ -722,28 +722,32 @@ class QlibModelNode(QlibCoreBaseNode):
                     train_error = "上游未提供数据集，无法训练"
                     logger.warning(f"⚠️ {train_error}")
 
+                trained = predictions is not None
                 self._execution_result = {
-                    'status': 'success' if predictions is not None else 'partial',
+                    'status': 'success' if trained else 'failed',
                     'model': model,
                     'model_class': model_class,
                     'predictions': predictions,
-                    'trained': predictions is not None,
+                    'trained': trained,
                     'train_error': train_error,
+                    'error': None if trained else (train_error or '模型未产出预测'),
                 }
                 self.set_output('model', self._execution_result)
                 self.set_output('predictions', self._execution_result)
-                if predictions is not None:
-                    # 同时缓存到全局 qlib_core：策略节点即便没连线，
-                    # 也能通过 signal='<PRED>' 取到这份真实预测。
-                    try:
-                        from core.qlib_core_integration import qlib_core as _qc
-                        if _qc is not None:
-                            _qc.set_cached_prediction(predictions)
-                    except Exception as _e:
-                        logger.debug(f"缓存预测失败(不影响流程): {_e}")
-                    logger.info(f"✅ 成功创建并训练Qlib模型: {model_class}")
-                else:
-                    logger.warning(f"⚠️ 模型已创建但未产出预测: {model_class} ({train_error})")
+                if not trained:
+                    # 以前这里 return True，工作流会被记成“部分成功”，
+                    # 下游却拿不到预测。没有预测就不是一次成功的训练。
+                    self._error_message = self._execution_result['error']
+                    logger.error("❌ 模型未产出预测: %s (%s)", model_class, self._error_message)
+                    return False
+                # 缓存到全局 qlib_core：策略节点的 signal='<PRED>' 可以取到这份预测。
+                try:
+                    from core.qlib_core_integration import qlib_core as _qc
+                    if _qc is not None:
+                        _qc.set_cached_prediction(predictions)
+                except Exception as _e:
+                    logger.debug(f"缓存预测失败(不影响流程): {_e}")
+                logger.info(f"✅ 成功创建并训练Qlib模型: {model_class}")
                 return True
             else:
                 self._execution_result = {
@@ -755,6 +759,7 @@ class QlibModelNode(QlibCoreBaseNode):
 
         except Exception as e:
             logger.error(f"Qlib模型节点执行失败: {e}")
+            self._error_message = str(e)
             return False
 
 class QlibStrategyNode(QlibCoreBaseNode):
@@ -1107,41 +1112,6 @@ class QlibBacktestNode(QlibCoreBaseNode):
         except Exception as e:
             logger.error(f"Qlib回测节点执行失败: {e}")
             return False
-
-    def _create_simple_signal(self, strategy_config: Dict[str, Any]) -> Optional[Any]:
-        """创建简单信号对象（回退方案）"""
-        try:
-            from qlib.backtest.signal import create_signal_from
-            import pandas as pd
-            import numpy as np
-
-            # 从策略配置中提取信息
-            kwargs = strategy_config.get('kwargs', {})
-            topk = kwargs.get('topk', 50)
-
-            # 创建基于topk的简单信号
-            n_stocks = min(topk, 10)  # 限制股票数量
-
-            # 生成简单的股票代码
-            stock_codes = [f"{i:06d}.SZ" for i in range(1, n_stocks + 1)]
-
-            # 创建简单的时间范围
-            dates = pd.date_range('2020-01-01', periods=5, freq='D')
-
-            # 创建零信号（中性信号）
-            signal_values = np.zeros((len(dates), len(stock_codes)))
-
-            signal_df = pd.DataFrame(
-                signal_values,
-                index=dates,
-                columns=stock_codes
-            )
-
-            return signal_df
-
-        except Exception as e:
-            logger.error(f"创建简单信号失败: {e}")
-            return None
 
 # 导出所有节点类
 __all__ = [

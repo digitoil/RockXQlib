@@ -252,16 +252,20 @@ class QlibCoreIntegration:
                     redis_freq_limit=None,
                 )
                 if not self._mlflow_client_available():
+                    from .qlib_file_exp import default_tracking_uri
                     qlib_init_kwargs["exp_manager"] = {
-                        "class": "RockXNullExpManager",
-                        "module_path": "core.qlib_exp_shim",
-                        "kwargs": {},
+                        "class": "RockXFileExpManager",
+                        "module_path": "core.qlib_file_exp",
+                        "kwargs": {
+                            "uri": default_tracking_uri(),
+                            "default_exp_name": "rockxqlib",
+                        },
                     }
                     logger.warning(
-                        "⚠️ 未检测到完整的 mlflow（缺少 MlflowClient），"
-                        "已切换到本地空实现实验管理器，训练/回测不受影响，"
-                        "但不落盘实验记录。安装完整版 mlflow 可恢复该功能："
-                        "pip install mlflow==2.9.2")
+                        "⚠️ 未检测到完整的 mlflow（缺少 MlflowClient）。"
+                        "实验记录改写到本地目录 %s，训练指标和对象可以再读出来。"
+                        "安装完整版 mlflow 可改回 MLflow：pip install 'mlflow>=2.9,<3'",
+                        default_tracking_uri())
 
                 qlib.init(**qlib_init_kwargs)
 
@@ -821,52 +825,23 @@ class QlibCoreIntegration:
             return {}
 
     def execute_workflow(self, config: Dict[str, Any]) -> Dict[str, Any]:
-        """执行完整的Qlib工作流"""
-        if not self.qlib_available or not self.qlib_initialized:
-            logger.error("Qlib未初始化，无法执行工作流")
-            return {}
+        """执行一份 qlib 工作流配置（训练、记录、按配置回测）。
+
+        以前这里只 ``create_model`` / ``create_strategy``，不调用 ``fit``，
+        也不写 recorder，却打成功日志。现在交给
+        :func:`core.qlib_research.run_qlib_experiment`，和 ``python -m pipeline qrun``
+        是同一条 ``task_train`` 路径。失败时返回 ``status=failed``，不夹带指标。
+        """
+        from .qlib_research import QlibResearchError, run_qlib_experiment
 
         try:
-            results = {}
-
-            # 1. 初始化Qlib
-            qlib_init = config.get('qlib_init', {})
-            if qlib_init:
-                self.initialize_qlib(
-                    provider_uri=qlib_init.get('provider_uri'),
-                    region=qlib_init.get('region', 'cn'),
-                    enable_exp_recorder=qlib_init.get('enable_exp_recorder', True)
-                )
-
-            # 2. 创建数据集
-            data_handler_config = config.get('data_handler_config', {})
-            if data_handler_config:
-                dataset = self.create_dataset(data_handler_config)
-                results['dataset'] = dataset
-
-            # 3. 创建模型
-            task_config = config.get('task', {})
-            if 'model' in task_config:
-                model = self.create_model(task_config['model'])
-                results['model'] = model
-
-            # 4. 创建策略
-            port_analysis_config = config.get('port_analysis_config', {})
-            if 'strategy' in port_analysis_config:
-                strategy = self.create_strategy(port_analysis_config['strategy'])
-                results['strategy'] = strategy
-
-            # 5. 运行回测
-            if 'backtest' in port_analysis_config:
-                backtest_result = self.run_backtest(port_analysis_config['backtest'])
-                results['backtest'] = backtest_result
-
-            logger.info("✅ 成功执行Qlib工作流")
-            return results
-
+            return run_qlib_experiment(config)
+        except QlibResearchError as e:
+            logger.error("❌ Qlib工作流没有跑成: %s", e)
+            return {"status": "failed", "error": str(e)}
         except Exception as e:
-            logger.error(f"❌ 执行Qlib工作流失败: {e}")
-            return {}
+            logger.error("❌ 执行Qlib工作流失败: %s", e)
+            return {"status": "failed", "error": "%s: %s" % (type(e).__name__, e)}
 
     def _normalize_signal(self, signal: Any) -> Optional[Any]:
         """把各种形态的 signal 统一成 qlib 可用的 Signal 对象。
