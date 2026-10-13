@@ -265,7 +265,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         bms = discover()
         if not bms:
             print("未找到 qlib 官方基准配置（examples/benchmarks 不存在或为空）。")
-            print("官方配置随 qlib 仓库分发；本工具只做格式转换，不联网下载。")
+            print("官方配置随 qlib 仓库分发，本仓库不包含 examples/；本工具只做格式转换，不联网下载。")
+            # --list 是自检：没有基准可列不是失败。真正导入时没有源文件仍应失败。
+            if args.list:
+                print("没有可列出的基准，跳过。")
+                return 0
             return 1
         if args.list:
             models = sorted({b.model for b in bms if b.model})

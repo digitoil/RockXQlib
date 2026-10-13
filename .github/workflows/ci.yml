@@ -68,5 +68,5 @@ jobs:
             echo "--- $f"
             python -m pipeline run "$f" --backend dry --runs-dir /tmp/runs
           done
-      - name: 官方基准导入器自检（能发现配置即通过）
+      - name: 官方基准导入器自检（无 examples/benchmarks 时说明并退出 0）
         run: python -m pipeline import-benchmarks --list

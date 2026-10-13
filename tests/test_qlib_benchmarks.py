@@ -111,6 +111,10 @@ class TestDiscover(unittest.TestCase):
         with TemporaryDirectory() as td:
             self.assertEqual(discover(Path(td) / "nope"), [])
 
+    def test_empty_dir_returns_empty(self):
+        with TemporaryDirectory() as td:
+            self.assertEqual(discover(Path(td)), [])
+
     def test_non_matching_filenames_ignored(self):
         with TemporaryDirectory() as td:
             root = Path(td)
@@ -267,6 +271,48 @@ class TestImportAll(unittest.TestCase):
             made = import_all(root, out, provider_uri="D:/data", limit=1)
             self.assertEqual(len(made), 1)
             self.assertEqual(len(list(out.glob("*.yaml"))), 1)
+
+
+class TestListCommand(unittest.TestCase):
+    """``import-benchmarks --list``：没有官方 examples 时退出 0，有配置时仍列出。"""
+
+    def _run(self, argv, found):
+        from contextlib import redirect_stdout
+        from unittest.mock import patch
+
+        from pipeline.cli import main
+
+        buf = io.StringIO()
+        with patch("pipeline.qlib_benchmarks.discover", return_value=found):
+            with redirect_stdout(buf):
+                rc = main(argv)
+        return rc, buf.getvalue()
+
+    def test_list_missing_or_empty_exits_zero(self):
+        rc, text = self._run(["import-benchmarks", "--list"], [])
+        self.assertEqual(rc, 0)
+        self.assertIn("未找到 qlib 官方基准配置", text)
+        self.assertIn("没有可列出的基准，跳过", text)
+
+    def test_import_without_sources_still_fails(self):
+        """真正导入时没有源文件必须失败，不能把空目录当成导入成功。"""
+        rc, text = self._run(["import-benchmarks"], [])
+        self.assertEqual(rc, 1)
+        self.assertIn("未找到 qlib 官方基准配置", text)
+
+    def test_list_prints_discovered_benchmarks(self):
+        bm = Benchmark(
+            slug="qlib_lightgbm_alpha158",
+            src=Path("workflow_config_lightgbm_Alpha158.yaml"),
+            model="LGBModel",
+            handler="Alpha158",
+            market="csi300",
+        )
+        rc, text = self._run(["import-benchmarks", "--list"], [bm])
+        self.assertEqual(rc, 0)
+        self.assertIn("qlib_lightgbm_alpha158", text)
+        self.assertIn("LGBModel", text)
+        self.assertIn("1 个", text)
 
 
 if __name__ == "__main__":
